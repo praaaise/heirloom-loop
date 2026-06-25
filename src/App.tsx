@@ -1,1201 +1,627 @@
 import { useState, useEffect, useRef } from "react";
 
-// ── SUPABASE ───────────────────────────────────────────────
-const SUPA_URL = "https://qriajzvzfhdwqnszjxht.supabase.co";
-const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFyaWFqenZ6Zmhkd3Fuc3pqeGh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MjA1MzAsImV4cCI6MjA5NTk5NjUzMH0.MqHy1xhCRxggZ8rl-Rd5FlbPPycVV6QanhfItv8-7tQ";
+// ── Supabase ──────────────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://qriajzvzfhdwqnszjxht.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFyaWFqenZ6Zmhkd3Fuc3pqeGh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY1NzAzNzYsImV4cCI6MjA2MjE0NjM3Nn0.6SqgQLvSuv4zMNGBvPMPLWEGxbKsNgFmkrHZNEFIHKE";
 
-const headers = {
-  "Content-Type": "application/json",
-  "apikey": SUPA_KEY,
-  "Authorization": `Bearer ${SUPA_KEY}`,
-  "Prefer": "return=representation",
-};
-
-const db = {
-  async getFamilies() {
-    const r = await fetch(`${SUPA_URL}/rest/v1/families?select=*&order=created_at.asc`, { headers });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async upsertFamily(family) {
-    const r = await fetch(`${SUPA_URL}/rest/v1/families`, {
-      method: "POST",
-      headers: { ...headers, "Prefer": "resolution=merge-duplicates,return=representation" },
-      body: JSON.stringify({ code: family.code, name: family.name, kids: family.kids || [] }),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async getItems() {
-    const r = await fetch(`${SUPA_URL}/rest/v1/items?select=*&order=created_at.asc`, { headers });
-    if (!r.ok) throw new Error(await r.text());
-    const rows = await r.json();
-    return rows.map(row => ({
-      id: row.id, ownerCode: row.owner_code, ownerName: row.owner_name,
-      name: row.name, size: row.size, notes: row.notes || "",
-      recall: row.recall, date: row.date, status: row.status,
-      givenTo: row.given_to, givenToName: row.given_to_name,
-    }));
-  },
-  async insertItem(item) {
-    const r = await fetch(`${SUPA_URL}/rest/v1/items`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        id: item.id, owner_code: item.ownerCode, owner_name: item.ownerName,
-        name: item.name, size: item.size, notes: item.notes || "",
-        recall: item.recall, date: item.date, status: item.status,
-        given_to: item.givenTo || null, given_to_name: item.givenToName || null,
-      }),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async updateItem(id, patch) {
-    const dbPatch = {};
-    if (patch.status !== undefined) dbPatch.status = patch.status;
-    if (patch.givenTo !== undefined) dbPatch.given_to = patch.givenTo;
-    if (patch.givenToName !== undefined) dbPatch.given_to_name = patch.givenToName;
-    if (patch.recall !== undefined) dbPatch.recall = patch.recall;
-    if (patch.name !== undefined) dbPatch.name = patch.name;
-    if (patch.size !== undefined) dbPatch.size = patch.size;
-    if (patch.notes !== undefined) dbPatch.notes = patch.notes;
-    if (patch.date !== undefined) dbPatch.date = patch.date;
-    const r = await fetch(`${SUPA_URL}/rest/v1/items?id=eq.${id}`, {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify(dbPatch),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async deleteItem(id) {
-    const r = await fetch(`${SUPA_URL}/rest/v1/items?id=eq.${id}`, {
-      method: "DELETE",
-      headers,
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return true;
-  },
-  // Real-time via polling (no WebSocket needed)
-  subscribe(onUpdate) {
-    const interval = setInterval(async () => {
-      try {
-        const [families, items] = await Promise.all([db.getFamilies(), db.getItems()]);
-        onUpdate(families, items);
-      } catch {}
-    }, 5000);
-    return () => clearInterval(interval);
+const sb = {
+  from: (table: string) => ({
+    select: (cols = "*") => fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}`, { headers: sbHeaders() }).then(r => r.json()),
+    insert: (data: object) => fetch(`${SUPABASE_URL}/rest/v1/${table}`, { method: "POST", headers: { ...sbHeaders(), "Prefer": "return=representation" }, body: JSON.stringify(data) }).then(r => r.json()),
+    update: (data: object) => ({
+      eq: (col: string, val: string) => fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, { method: "PATCH", headers: { ...sbHeaders(), "Prefer": "return=representation" }, body: JSON.stringify(data) }).then(r => r.json())
+    }),
+    delete: () => ({
+      eq: (col: string, val: string) => fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, { method: "DELETE", headers: sbHeaders() }).then(r => r.json())
+    }),
+  }),
+  storage: {
+    upload: async (bucket: string, path: string, file: File): Promise<string | null> => {
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${bucket}/${path}`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${SUPABASE_ANON}`, "Content-Type": file.type },
+        body: file,
+      });
+      if (!res.ok) return null;
+      return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}`;
+    }
   }
 };
+function sbHeaders() {
+  return { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${SUPABASE_ANON}`, "Content-Type": "application/json" };
+}
 
-// ── THEME ──────────────────────────────────────────────────
-const T = {
-  bg: "#F7F2EB", surface: "#FFFFFF", card: "#FDFAF6",
-  sage: "#5C8A5C", sageMid: "#8AB08A", sageLight: "#E8F0E8",
-  terracotta: "#C4714A", terraSoft: "#F5E8E0",
-  ink: "#1E1E1E", muted: "#7A7268", border: "#E2DAD0", white: "#FFFFFF",
-};
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface Family { id: string; code: string; name: string; }
+interface Item {
+  id: string; description: string; size: string; condition: string;
+  status: string; owner_code: string; given_to: string | null;
+  recall_preference: string | null; received_from: string | null;
+  bundle_photo_url: string | null; created_at: string;
+}
+type Tab = "home" | "given" | "received" | "all" | "community";
+type SubScreen = "scan" | "manual";
 
-const uid = () => Math.random().toString(36).slice(2, 9);
-const fmtDate = (d) => {
-  if (!d) return "";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-};
-
-// ── LOGO MARK ──────────────────────────────────────────────
-// Denim jeans (back view) with a sage green leaf tag. The tag shows
-// the family code if given, otherwise "ABC" as the brand placeholder.
-const LogoMark = ({ size = 72, code = "ABC" }) => {
-  const id = "lm" + (code || "abc");
+// ── Logo ──────────────────────────────────────────────────────────────────────
+function LogoMark({ code = "ABC", size = 52 }: { code?: string; size?: number }) {
+  const s = size / 52;
   return (
-    <svg width={size} height={size} viewBox="0 0 180 180" role="img" aria-label="Heirloom Loop logo">
-      <defs>
-        <pattern id={`${id}-d`} patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-          <rect width="4" height="4" fill="#3D6B9E"/>
-          <line x1="0" y1="0" x2="0" y2="4" stroke="#3560A0" strokeWidth="1.2" opacity="0.5"/>
-        </pattern>
-        <pattern id={`${id}-dd`} patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-          <rect width="4" height="4" fill="#2E5280"/>
-          <line x1="0" y1="0" x2="0" y2="4" stroke="#264870" strokeWidth="1.2" opacity="0.5"/>
-        </pattern>
-      </defs>
-      {/* translate the 252-428 / 86-280 art into a 0-180 box: scale ~0.93, shift */}
-      <g transform="translate(-218, -64) scale(0.84)">
-        {/* waistband */}
-        <rect x="252" y="86" width="176" height="24" rx="4" fill={`url(#${id}-dd)`}/>
-        <rect x="252" y="86" width="176" height="24" rx="4" fill="none" stroke="#1E3A5F" strokeWidth="1.2"/>
-        {/* belt loops */}
-        <rect x="268" y="82" width="9" height="16" rx="2.5" fill="#2A4E78"/>
-        <rect x="336" y="82" width="9" height="16" rx="2.5" fill="#2A4E78"/>
-        <rect x="393" y="82" width="9" height="16" rx="2.5" fill="#2A4E78"/>
-        {/* leaf tag */}
-        <path d="M 372 98 C 380 88 394 84 412 86 C 426 87 432 92 432 98 C 432 104 426 109 412 110 C 394 112 380 108 372 98 Z" fill="#5C8A5C"/>
-        <path d="M 374 98 C 390 98 410 98 430 98" stroke="#8AB08A" strokeWidth="0.8" strokeLinecap="round" opacity="0.6"/>
-        <text x="406" y="102" textAnchor="middle" fontFamily="Georgia, serif" fontSize="10" fill="#3A6A3A" letterSpacing="0.1em" fontStyle="italic">{code}</text>
-        <text x="405" y="101" textAnchor="middle" fontFamily="Georgia, serif" fontSize="10" fill="#EDF5ED" letterSpacing="0.1em" fontStyle="italic">{code}</text>
-        {/* body */}
-        <path d="M 252 110 L 252 205 Q 252 222 270 227 L 330 234 L 340 212 L 350 234 L 410 227 Q 428 222 428 205 L 428 110 Z" fill={`url(#${id}-d)`}/>
-        <path d="M 252 110 L 252 205 Q 252 222 270 227 L 330 234 L 340 212 L 350 234 L 410 227 Q 428 222 428 205 L 428 110 Z" fill="none" stroke="#1E3A5F" strokeWidth="1.2" strokeLinejoin="round"/>
-        <path d="M 340 110 L 340 212" stroke="#2A5080" strokeWidth="1" strokeDasharray="4,3"/>
-        {/* pockets */}
-        <path d="M 264 118 L 264 158 Q 264 164 270 164 L 318 164 Q 324 164 324 158 L 324 118 Z" fill="none" stroke="#F5E6C8" strokeWidth="1.3" strokeLinejoin="round"/>
-        <path d="M 269 133 Q 293 126 320 133" fill="none" stroke="#F0D080" strokeWidth="1.3" strokeLinecap="round" strokeDasharray="2.5,2"/>
-        <path d="M 356 118 L 356 158 Q 356 164 362 164 L 393 164 Q 399 164 399 158 L 399 118 Z" fill="none" stroke="#F5E6C8" strokeWidth="1.3" strokeLinejoin="round"/>
-        <path d="M 360 133 Q 377 126 396 133" fill="none" stroke="#F0D080" strokeWidth="1.3" strokeLinecap="round" strokeDasharray="2.5,2"/>
-        {/* legs */}
-        <path d="M 252 205 Q 248 254 255 270 L 328 278 L 340 212 Z" fill={`url(#${id}-d)`}/>
-        <path d="M 252 205 Q 248 254 255 270 L 328 278 L 340 212 Z" fill="none" stroke="#1E3A5F" strokeWidth="1.2" strokeLinejoin="round"/>
-        <line x1="257" y1="272" x2="328" y2="276" stroke="#F5E6C8" strokeWidth="1.1" strokeDasharray="3,2" strokeLinecap="round"/>
-        <path d="M 428 205 Q 432 254 425 270 L 352 278 L 340 212 Z" fill={`url(#${id}-d)`}/>
-        <path d="M 428 205 Q 432 254 425 270 L 352 278 L 340 212 Z" fill="none" stroke="#1E3A5F" strokeWidth="1.2" strokeLinejoin="round"/>
-        <line x1="423" y1="272" x2="352" y2="276" stroke="#F5E6C8" strokeWidth="1.1" strokeDasharray="3,2" strokeLinecap="round"/>
-      </g>
+    <svg width={size} height={size} viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* jeans body */}
+      <path d="M8 6 h36 l-4 28 -10 2 -10-2 Z" fill="#3B5FA0" />
+      {/* left leg */}
+      <path d="M14 34 l-6 12 h14 l4-12 Z" fill="#3B5FA0" />
+      {/* right leg */}
+      <path d="M38 34 l6 12 h-14 l-4-12 Z" fill="#3B5FA0" />
+      {/* crotch seam */}
+      <path d="M20 34 l6 6 6-6" stroke="#2a4a80" strokeWidth="1" fill="none" />
+      {/* waistband */}
+      <rect x="8" y="4" width="36" height="5" rx="1" fill="#2a4a80" />
+      {/* left pocket arc */}
+      <path d="M13 10 q5-5 10 0" stroke="#C9A84C" strokeWidth="1.2" fill="none" />
+      {/* right pocket arc */}
+      <path d="M29 10 q5-5 10 0" stroke="#C9A84C" strokeWidth="1.2" fill="none" />
+      {/* leaf tag on right waistband */}
+      <ellipse cx="40" cy="4" rx="7" ry="4" fill="#7A9E7E" transform="rotate(-20 40 4)" />
+      <text x="40" y="5.5" textAnchor="middle" fontSize={`${4.5 * s}px`} fontFamily="Georgia, serif" fontStyle="italic" fill="#F5EDD6" transform="rotate(-20 40 4)">{code}</text>
     </svg>
   );
-};
+}
 
-// ── SESSION (which family am I?) ───────────────────────────
-const SESSION_KEY = "heirloom_loop_code";
-const getSessionCode = () => {
-  try { return localStorage.getItem(SESSION_KEY); } catch { return null; }
-};
-const setSessionCode = (code) => {
-  try { localStorage.setItem(SESSION_KEY, code); } catch {}
-};
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function Toast({ msg }: { msg: string }) {
+  return (
+    <div style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", background: "#2d4a2d", color: "#fff", padding: "10px 20px", borderRadius: 20, fontSize: 14, zIndex: 999, whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
+      {msg}
+    </div>
+  );
+}
 
-// ── AI VISION SCAN ─────────────────────────────────────────
-// Calls the secure Supabase Edge Function (which holds the Anthropic key server-side).
-// The browser never touches the API key.
-async function scanClothingPhoto(base64Image, mediaType) {
-  const response = await fetch(`${SUPA_URL}/functions/v1/scan-clothing`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${SUPA_KEY}`,
-      "apikey": SUPA_KEY,
-    },
-    body: JSON.stringify({ base64Image, mediaType }),
-  });
-  if (!response.ok) {
-    throw new Error(`Scan failed: ${response.status}`);
+// ── Status pill ───────────────────────────────────────────────────────────────
+function StatusPill({ status }: { status: string }) {
+  const isOut = status.startsWith("out");
+  const color = status === "available" ? "#7A9E7E" : status === "returned" ? "#C9A84C" : "#C47B5A";
+  const label = isOut ? status : status.charAt(0).toUpperCase() + status.slice(1);
+  return <span style={{ background: color + "22", color, border: `1px solid ${color}55`, borderRadius: 12, padding: "2px 10px", fontSize: 12, fontFamily: "DM Mono, monospace", whiteSpace: "nowrap" }}>{label}</span>;
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [family, setFamily] = useState<Family | null>(null);
+  const [families, setFamilies] = useState<Family[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
+  const [tab, setTab] = useState<Tab>("home");
+  const [subScreen, setSubScreen] = useState<SubScreen | null>(null);
+  const [toast, setToast] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { loadFamilies(); }, []);
+  useEffect(() => { if (family) loadItems(); }, [family]);
+
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(""), 3000); }
+
+  async function loadFamilies() {
+    const data = await sb.from("families").select("*");
+    if (Array.isArray(data)) setFamilies(data);
+    setLoading(false);
   }
-  const data = await response.json();
-  return Array.isArray(data.items) ? data.items : [];
-}
 
-// ── SHARED UI ──────────────────────────────────────────────
-const Pill = ({ children, color = T.sageLight, text = T.sage, style = {} }) => (
-  <span style={{ background: color, color: text, fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", padding: "3px 9px", borderRadius: 20, textTransform: "uppercase", fontFamily: "'DM Mono', monospace", whiteSpace: "nowrap", ...style }}>{children}</span>
-);
+  async function loadItems() {
+    const data = await sb.from("items").select("*");
+    if (Array.isArray(data)) setItems(data);
+  }
 
-const Btn = ({ children, onClick, variant = "primary", size = "md", style = {}, disabled = false }) => {
-  const variants = { primary: { background: T.sage, color: T.white }, secondary: { background: T.sageLight, color: T.sage }, ghost: { background: "transparent", color: T.muted, border: `1.5px solid ${T.border}` }, danger: { background: T.terraSoft, color: T.terracotta } };
-  return (
-    <button onClick={disabled ? undefined : onClick} style={{ border: "none", cursor: disabled ? "not-allowed" : "pointer", borderRadius: 12, fontFamily: "'DM Sans', sans-serif", fontWeight: 700, transition: "opacity 0.15s", opacity: disabled ? 0.5 : 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, ...(size === "sm" ? { fontSize: 13, padding: "8px 14px" } : { fontSize: 15, padding: "13px 20px" }), ...variants[variant], ...style }}>
-      {children}
-    </button>
-  );
-};
+  async function login(code: string, name: string) {
+    const existing = families.find(f => f.code.toUpperCase() === code.toUpperCase());
+    if (existing) { setFamily(existing); return; }
+    const res = await sb.from("families").insert({ code: code.toUpperCase(), name });
+    if (Array.isArray(res) && res[0]) { setFamily(res[0]); setFamilies(prev => [...prev, res[0]]); }
+  }
 
-const Card = ({ children, style = {}, onClick }) => (
-  <div onClick={onClick} style={{ background: T.card, borderRadius: 16, border: `1.5px solid ${T.border}`, padding: "14px 16px", marginBottom: 10, cursor: onClick ? "pointer" : "default", ...style }}>{children}</div>
-);
+  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "DM Sans, sans-serif", color: "#3B5FA0" }}>Loading…</div>;
+  if (!family) return <LoginScreen families={families} onLogin={login} />;
 
-const FieldInput = ({ label, value, onChange, placeholder, type = "text", required }) => (
-  <div style={{ marginBottom: 14 }}>
-    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "'DM Mono', monospace", marginBottom: 5 }}>{label}{required && <span style={{ color: T.terracotta }}> *</span>}</label>
-    <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ width: "100%", padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.white, fontFamily: "'DM Sans', sans-serif", fontSize: 14, color: T.ink, boxSizing: "border-box", outline: "none" }} />
-  </div>
-);
+  const myItems = items.filter(i => i.owner_code === family.code);
+  const givenItems = myItems.filter(i => i.status.startsWith("out"));
+  const receivedItems = items.filter(i => i.given_to === family.code || i.received_from === family.code);
 
-const FieldSelect = ({ label, value, onChange, options }) => (
-  <div style={{ marginBottom: 14 }}>
-    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "'DM Mono', monospace", marginBottom: 5 }}>{label}</label>
-    <select value={value} onChange={e => onChange(e.target.value)} style={{ width: "100%", padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.white, fontFamily: "'DM Sans', sans-serif", fontSize: 14, color: T.ink, boxSizing: "border-box", outline: "none", appearance: "none" }}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  </div>
-);
-
-const TopBar = ({ title, subtitle, onBack }) => (
-  <div style={{ padding: "16px 18px 12px", borderBottom: `1px solid ${T.border}`, background: T.bg }}>
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      {onBack && <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: T.ink, padding: 0, lineHeight: 1 }}>←</button>}
-      <div>
-        <h2 style={{ margin: 0, fontFamily: "'Playfair Display', serif", fontSize: 20, color: T.ink, fontWeight: 700 }}>{title}</h2>
-        {subtitle && <p style={{ margin: "2px 0 0", fontSize: 12, color: T.muted, fontFamily: "'DM Sans', sans-serif" }}>{subtitle}</p>}
-      </div>
-    </div>
-  </div>
-);
-
-const BottomNav = ({ active, onChange }) => (
-  <div style={{ position: "sticky", bottom: 0, background: T.white, borderTop: `1.5px solid ${T.border}`, display: "flex", justifyContent: "space-around", padding: "8px 0 16px", zIndex: 50 }}>
-    {[{ id: "home", icon: "⌂", label: "Home" }, { id: "given", icon: "↑", label: "Given" }, { id: "received", icon: "↓", label: "Received" }, { id: "all", icon: "▦", label: "All Items" }, { id: "community", icon: "◎", label: "Loop" }].map(t => (
-      <button key={t.id} onClick={() => onChange(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: active === t.id ? T.sage : T.muted, fontFamily: "'DM Sans', sans-serif", minWidth: 48 }}>
-        <span style={{ fontSize: 18 }}>{t.icon}</span>
-        <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.03em", textTransform: "uppercase" }}>{t.label}</span>
-      </button>
-    ))}
-  </div>
-);
-
-const Modal = ({ open, onClose, title, children }) => {
-  if (!open) return null;
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{ background: T.white, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", padding: "20px 20px 32px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-          <h3 style={{ margin: 0, fontFamily: "'Playfair Display', serif", fontSize: 20, color: T.ink }}>{title}</h3>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: T.muted }}>✕</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-};
-
-// ── TOAST ──────────────────────────────────────────────────
-const Toast = ({ message, visible }) => (
-  <div style={{
-    position: "fixed", bottom: 90, left: "50%", transform: `translateX(-50%) translateY(${visible ? 0 : 20}px)`,
-    background: T.ink, color: T.white, borderRadius: 12, padding: "10px 18px",
-    fontSize: 13, fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
-    opacity: visible ? 1 : 0, transition: "all 0.3s", zIndex: 300, whiteSpace: "nowrap",
-    boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-  }}>{message}</div>
-);
-
-// ── PHOTO SCAN ─────────────────────────────────────────────
-function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }) {
-  const [step, setStep] = useState("upload");
-  const [imagePreview, setImagePreview] = useState(null);
-  const [imageBase64, setImageBase64] = useState(null);
-  const [imageType, setImageType] = useState("image/jpeg");
-  const [items, setItems] = useState([]);
-  const [scanError, setScanError] = useState("");
-  const [givenTo, setGivenTo] = useState("");
-  const [recall, setRecall] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const fileRef = useRef();
-  const otherFamilies = Object.values(families).filter(f => f.code !== family.code);
-
-  const handleFile = (file) => {
-    if (!file) return;
-    // Resize the photo down before sending — full-res phone photos are too
-    // large for the Edge Function payload and cause 502s. We cap the longest
-    // side at 1568px (plenty for the AI to read clothing) and re-encode as JPEG.
-    const reader = new FileReader();
-    reader.onload = e => {
-      const dataUrl = e.target.result;
-      if (typeof dataUrl !== "string") return;
-      const img = new Image();
-      img.onload = () => {
-        const MAX = 1568;
-        let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          if (width >= height) { height = Math.round(height * (MAX / width)); width = MAX; }
-          else { width = Math.round(width * (MAX / height)); height = MAX; }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
-        const resized = canvas.toDataURL("image/jpeg", 0.82);
-        setImageType("image/jpeg");
-        setImagePreview(resized);
-        setImageBase64(resized.split(",")[1]);
-      };
-      img.onerror = () => {
-        // Fallback: use the original if the image can't be processed
-        setImageType(file.type || "image/jpeg");
-        setImagePreview(dataUrl);
-        setImageBase64(dataUrl.split(",")[1]);
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleScan = async () => {
-    if (!imageBase64) return;
-    setStep("scanning"); setScanError("");
-    try {
-      const found = await scanClothingPhoto(imageBase64, imageType);
-      if (!found.length) { setScanError("No clothing detected. Try a clearer photo with items spread flat."); setStep("upload"); return; }
-      setItems(found.map(item => ({ ...item, id: uid(), checked: true, _name: item.name, _size: item.size, _notes: item.notes || "", _editing: false })));
-      setStep("review");
-    } catch { setScanError("Scan failed — please try again."); setStep("upload"); }
-  };
-
-  const toggle = (id) => setItems(p => p.map(i => i.id === id ? { ...i, checked: !i.checked } : i));
-  const update = (id, f, v) => setItems(p => p.map(i => i.id === id ? { ...i, [f]: v } : i));
-  const remove = (id) => setItems(p => p.filter(i => i.id !== id));
-  const selected = items.filter(i => i.checked);
-
-  const handleLogAll = async () => {
-    setSaving(true);
-    const newItems = selected.map(item => ({
-      id: uid(), ownerCode: family.code, ownerName: family.name,
-      name: item._name || item.name, size: item._size || item.size,
-      notes: item._notes || "", recall,
-      date: new Date().toISOString().split("T")[0],
-      status: givenTo ? "out" : "available",
-      givenTo: givenTo || null,
-      givenToName: givenTo ? (families[givenTo]?.name || givenTo) : null,
-    }));
-    try {
-      await Promise.all(newItems.map(item => db.insertItem(item)));
-      onInsertItems(newItems);
-      setStep("saved");
-    } catch (e) {
-      setScanError("Failed to save — check your connection.");
-      setStep("details");
-    }
-    setSaving(false);
-  };
-
-  if (step === "upload") return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="Scan a Bundle" subtitle="AI identifies each item from one photo" onBack={onBack} />
-      <div style={{ padding: "18px" }}>
-        <div style={{ background: T.sageLight, borderRadius: 14, padding: "14px 16px", marginBottom: 20, display: "flex", gap: 12 }}>
-          <span style={{ fontSize: 22, flexShrink: 0 }}>📸</span>
-          <p style={{ margin: 0, fontSize: 13, color: T.ink, lineHeight: 1.55, fontFamily: "'DM Sans', sans-serif" }}><strong>Best results:</strong> Lay items flat and spread out on a light surface. Shoot from above in good light.</p>
-        </div>
-        <div onClick={() => fileRef.current?.click()} style={{ border: `2px dashed ${imagePreview ? T.sage : T.border}`, borderRadius: 16, background: imagePreview ? "transparent" : T.white, minHeight: imagePreview ? "auto" : 200, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden", marginBottom: 14 }}>
-          {imagePreview ? <img src={imagePreview} alt="Preview" style={{ width: "100%", display: "block", borderRadius: 14 }} /> : (
-            <div style={{ textAlign: "center", padding: 32 }}>
-              <p style={{ fontSize: 40, margin: "0 0 10px" }}>🖼️</p>
-              <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>Tap to upload or take photo</p>
-              <p style={{ margin: "4px 0 0", fontSize: 13, color: T.muted }}>Camera or photo library</p>
-            </div>
-          )}
-        </div>
-        <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleFile(e.target.files[0])} />
-        {imagePreview && <button onClick={() => fileRef.current?.click()} style={{ background: "none", border: "none", color: T.muted, fontSize: 13, cursor: "pointer", marginBottom: 14, fontFamily: "'DM Sans', sans-serif", textDecoration: "underline", padding: 0, display: "block" }}>Use a different photo</button>}
-        {scanError && <div style={{ background: T.terraSoft, borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}><p style={{ margin: 0, fontSize: 13, color: T.terracotta }}>⚠️ {scanError}</p></div>}
-        <Btn onClick={handleScan} disabled={!imageBase64} style={{ width: "100%", marginBottom: 8 }}>✦ Scan with AI →</Btn>
-        <p style={{ textAlign: "center", fontSize: 12, color: T.muted, margin: 0 }}>Claude reads your photo and lists every item</p>
-      </div>
-    </div>
-  );
-
-  if (step === "scanning") return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 500, padding: "40px 24px", textAlign: "center" }}>
-      <style>{`@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}} @keyframes dot{0%,80%,100%{opacity:.2}40%{opacity:1}}`}</style>
-      {imagePreview && <img src={imagePreview} alt="" style={{ width: 180, height: 180, objectFit: "cover", borderRadius: 16, border: `3px solid ${T.sage}`, marginBottom: 24, animation: "float 2s ease-in-out infinite" }} />}
-      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>{[0,1,2].map(i => <div key={i} style={{ width: 9, height: 9, borderRadius: 9, background: T.sage, animation: "dot 1.4s ease-in-out infinite", animationDelay: `${i*0.2}s` }} />)}</div>
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, color: T.ink, margin: "0 0 6px" }}>Scanning your bundle…</h2>
-      <p style={{ color: T.muted, fontSize: 14, margin: 0 }}>Claude is identifying each item. Just a moment.</p>
-    </div>
-  );
-
-  if (step === "review") return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="Review Items" subtitle={`${selected.length} of ${items.length} selected`} onBack={() => setStep("upload")} />
-      <div style={{ padding: "12px 18px" }}>
-        {imagePreview && <img src={imagePreview} alt="Bundle" style={{ width: "100%", maxHeight: 150, objectFit: "cover", borderRadius: 12, border: `1.5px solid ${T.border}`, marginBottom: 12 }} />}
-        <div style={{ background: T.sageLight, borderRadius: 12, padding: "10px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <p style={{ margin: 0, fontSize: 13, color: T.sage, fontFamily: "'DM Sans', sans-serif" }}>✦ Found <strong>{items.length} items</strong>. Tap ✎ to edit, uncheck to skip.</p>
-          <button onClick={() => setItems(p => p.map(i => ({ ...i, checked: true })))} style={{ background: "none", border: "none", fontSize: 12, color: T.sage, cursor: "pointer", fontWeight: 700, fontFamily: "'DM Sans', sans-serif" }}>All</button>
-        </div>
-        {items.map(item => (
-          <div key={item.id} style={{ background: item.checked ? T.white : "#F0EBE0", border: `1.5px solid ${item.checked ? T.border : "#D8CEC4"}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, opacity: item.checked ? 1 : 0.55, transition: "all 0.15s" }}>
-            {item._editing ? (
-              <div>
-                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                  <input value={item._name} onChange={e => update(item.id, "_name", e.target.value)} placeholder="Item name" style={{ flex: 2, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${T.sage}`, fontFamily: "'DM Sans', sans-serif", fontSize: 13, outline: "none" }} />
-                  <input value={item._size} onChange={e => update(item.id, "_size", e.target.value)} placeholder="Size" style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${T.sage}`, fontFamily: "'DM Sans', sans-serif", fontSize: 13, outline: "none" }} />
-                </div>
-                <input value={item._notes} onChange={e => update(item.id, "_notes", e.target.value)} placeholder="Notes (optional)" style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${T.border}`, fontFamily: "'DM Sans', sans-serif", fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 8 }} />
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => update(item.id, "_editing", false)} style={{ background: T.sage, color: T.white, border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>Done ✓</button>
-                  <button onClick={() => remove(item.id)} style={{ background: T.terraSoft, color: T.terracotta, border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>Remove</button>
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div onClick={() => toggle(item.id)} style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, border: `2px solid ${item.checked ? T.sage : T.border}`, background: item.checked ? T.sage : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                  {item.checked && <span style={{ color: T.white, fontSize: 13, fontWeight: 700 }}>✓</span>}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: T.ink, fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item._name}</p>
-                  <p style={{ margin: "2px 0 0", fontSize: 12, color: T.muted }}>Size {item._size}{item._notes ? ` · ${item._notes}` : ""}</p>
-                </div>
-                <button onClick={() => update(item.id, "_editing", true)} style={{ background: "none", border: "none", color: T.muted, fontSize: 14, cursor: "pointer", padding: "4px 6px" }}>✎</button>
-              </div>
-            )}
-          </div>
-        ))}
-        <button onClick={() => setItems(p => [...p, { id: uid(), _name: "", _size: "", _notes: "", checked: true, _editing: true }])} style={{ width: "100%", padding: "11px", background: "transparent", border: `1.5px dashed ${T.border}`, borderRadius: 12, color: T.muted, fontFamily: "'DM Sans', sans-serif", fontSize: 13, cursor: "pointer", marginBottom: 20 }}>+ Add item manually</button>
-        <Btn onClick={() => setStep("details")} disabled={!selected.length} style={{ width: "100%" }}>Next: Handoff details ({selected.length} items) →</Btn>
-      </div>
-    </div>
-  );
-
-  if (step === "details") return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="Handoff Details" subtitle={`Applies to all ${selected.length} items`} onBack={() => setStep("review")} />
-      <div style={{ padding: "16px 18px" }}>
-        <div style={{ background: T.sageLight, borderRadius: 12, padding: "12px 14px", marginBottom: 20 }}>
-          <p style={{ margin: 0, fontSize: 13, color: T.sage, fontFamily: "'DM Sans', sans-serif", lineHeight: 1.5 }}>These settings apply to all <strong>{selected.length} items</strong> in this bundle.</p>
-        </div>
-        <FieldSelect label="Giving to (optional)" value={givenTo} onChange={setGivenTo}
-          options={[{ value: "", label: "Available to anyone in loop" }, ...otherFamilies.map(f => ({ value: f.code, label: f.name }))]} />
-        <div style={{ marginBottom: 18 }}>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "'DM Mono', monospace", marginBottom: 8 }}>Your preference</label>
-          <div style={{ display: "flex", gap: 10 }}>
-            {[{ val: true, icon: "🔁", label: "I want them back", desc: "Return when done" }, { val: false, icon: "→", label: "Free to flow", desc: "Pass forward" }].map(opt => (
-              <div key={String(opt.val)} onClick={() => setRecall(opt.val)} style={{ flex: 1, padding: "12px", borderRadius: 12, cursor: "pointer", textAlign: "center", border: `2px solid ${recall === opt.val ? T.sage : T.border}`, background: recall === opt.val ? T.sageLight : T.white }}>
-                <p style={{ margin: 0, fontSize: 16 }}>{opt.icon}</p>
-                <p style={{ margin: "3px 0 1px", fontWeight: 700, fontSize: 13, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{opt.label}</p>
-                <p style={{ margin: 0, fontSize: 11, color: T.muted }}>{opt.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={{ background: T.white, borderRadius: 12, border: `1.5px solid ${T.border}`, padding: "12px 14px", marginBottom: 20 }}>
-          <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 700, color: T.muted, fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: "0.07em" }}>{selected.length} items to log</p>
-          {selected.map(item => (
-            <div key={item.id} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.border}` }}>
-              <span style={{ fontSize: 13, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{item._name}</span>
-              <span style={{ fontSize: 12, color: T.muted, fontFamily: "'DM Mono', monospace" }}>{item._size}</span>
-            </div>
-          ))}
-        </div>
-        {scanError && <div style={{ background: T.terraSoft, borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}><p style={{ margin: 0, fontSize: 13, color: T.terracotta }}>⚠️ {scanError}</p></div>}
-        <Btn onClick={handleLogAll} disabled={saving} style={{ width: "100%" }}>{saving ? "Saving…" : `🌿 Log all ${selected.length} items →`}</Btn>
-      </div>
-    </div>
+  if (subScreen === "scan") return (
+    <PhotoScanScreen
+      family={family}
+      families={families}
+      onSaved={(direction) => {
+        loadItems();
+        setSubScreen(null);
+        setTab(direction === "received" ? "received" : "given");
+        showToast("Bundle logged! 🌿");
+      }}
+      onCancel={() => setSubScreen(null)}
+    />
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 500, padding: "40px 24px", textAlign: "center" }}>
-      <div style={{ fontSize: 56, marginBottom: 16 }}>🌿</div>
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 26, color: T.ink, margin: "0 0 8px" }}>Bundle logged!</h2>
-      <p style={{ color: T.muted, fontSize: 15, marginBottom: 12, lineHeight: 1.6 }}><strong style={{ color: T.ink }}>{selected.length} items</strong> saved to Supabase{givenTo ? ` and given to ${families[givenTo]?.name || givenTo}` : ""}.</p>
-      <div style={{ background: T.sageLight, borderRadius: 12, padding: "12px 16px", marginBottom: 28, textAlign: "left", width: "100%" }}>
-        {selected.slice(0, 6).map(item => <p key={item.id} style={{ margin: "3px 0", fontSize: 13, color: T.sage, fontFamily: "'DM Sans', sans-serif" }}>✓ {item._name} · {item._size}</p>)}
-        {selected.length > 6 && <p style={{ margin: "4px 0 0", fontSize: 12, color: T.muted }}>+{selected.length - 6} more</p>}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-        <Btn onClick={() => { setStep("upload"); setImagePreview(null); setImageBase64(null); setItems([]); }}>Scan another bundle</Btn>
-        <Btn variant="ghost" onClick={onSaved}>Back to wardrobe</Btn>
-      </div>
-    </div>
-  );
-}
+    <div style={{ fontFamily: "DM Sans, sans-serif", maxWidth: 480, margin: "0 auto", minHeight: "100vh", background: "#FAFAF7", display: "flex", flexDirection: "column" }}>
+      {toast && <Toast msg={toast} />}
 
-// ── ITEM CARD ──────────────────────────────────────────────
-const ItemCard = ({ item, currentCode, onReturn, onMarkGiven, families }) => {
-  const isHolder = item.givenTo === currentCode;
-  const holderFamily = item.givenTo ? (families[item.givenTo]?.name || item.givenToName || item.givenTo) : null;
-  return (
-    <Card>
-      <div style={{ marginBottom: 8 }}>
-        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{item.name}</p>
-        <p style={{ margin: "2px 0 6px", fontSize: 12, color: T.muted }}>Size {item.size}{item.notes ? ` · ${item.notes}` : ""}{item.date ? ` · ${fmtDate(item.date)}` : ""}</p>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {item.status === "available" && <Pill>Available</Pill>}
-          {item.status === "out" && holderFamily && <Pill color="#EEE8E0" text={T.muted}>With {holderFamily}</Pill>}
-          {item.status === "returned" && <Pill color="#E8E0F0" text="#6A4FA0">Returned</Pill>}
-          {item.recall && item.status === "out" && <Pill color={T.terraSoft} text={T.terracotta}>Recall wanted</Pill>}
-          {!item.recall && item.status === "out" && <Pill color={T.sageLight} text={T.sageMid}>Free to flow</Pill>}
-          {item.ownerCode !== currentCode && <Pill color="#F0EBE0" text={T.muted}>From {families[item.ownerCode]?.name || item.ownerName}</Pill>}
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {isHolder && item.status === "out" && <Btn size="sm" variant="secondary" onClick={() => onReturn(item)}>Mark returned ↩</Btn>}
-        {item.ownerCode === currentCode && item.status === "available" && onMarkGiven && <Btn size="sm" onClick={() => onMarkGiven(item)}>Give to someone →</Btn>}
-      </div>
-    </Card>
-  );
-};
-
-// ── HOME ───────────────────────────────────────────────────
-function HomeScreen({ family, families, items, onNavigate, syncing }) {
-  const myCode = family.code;
-  const given = items.filter(i => i.ownerCode === myCode && i.status === "out");
-  const received = items.filter(i => i.givenTo === myCode && i.status === "out");
-  const available = items.filter(i => i.status === "available" && i.ownerCode !== myCode);
-  return (
-    <div style={{ padding: "24px 18px 20px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-        <p style={{ margin: 0, fontFamily: "'DM Mono', monospace", fontSize: 11, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase" }}>Welcome back</p>
-        {syncing && <span style={{ fontSize: 11, color: T.sageMid, fontFamily: "'DM Sans', sans-serif" }}>↻ Syncing…</span>}
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
-        <LogoMark size={52} code={family.code} />
-        <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, margin: 0, color: T.ink }}>{family.name.split(" ")[0]}</h1>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, marginBottom: 22 }}>
-        <Pill>{family.code}</Pill>
-        <span style={{ fontSize: 12, color: T.muted }}>{Object.keys(families).length} {Object.keys(families).length === 1 ? "family" : "families"} in your loop</span>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 22 }}>
-        {[{ label: "Given out", value: given.length, nav: "given" }, { label: "In care", value: received.length, nav: "received" }, { label: "Available", value: available.length, nav: "community" }].map(s => (
-          <div key={s.label} onClick={() => onNavigate(s.nav)} style={{ background: T.white, border: `1.5px solid ${T.border}`, borderRadius: 14, padding: "14px 10px", textAlign: "center", cursor: "pointer" }}>
-            <p style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, margin: 0, color: T.sage }}>{s.value}</p>
-            <p style={{ fontSize: 10, color: T.muted, margin: "2px 0 0", fontFamily: "'DM Sans', sans-serif", textTransform: "uppercase", letterSpacing: "0.05em" }}>{s.label}</p>
-          </div>
-        ))}
-      </div>
-      <div onClick={() => onNavigate("scan")} style={{ background: `linear-gradient(135deg, ${T.sage}, #3D6B3D)`, borderRadius: 16, padding: "18px", marginBottom: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 14 }}>
-        <span style={{ fontSize: 34 }}>📸</span>
+      {/* Header */}
+      <div style={{ background: "#fff", borderBottom: "1px solid #e8e4de", padding: "12px 20px", display: "flex", alignItems: "center", gap: 10 }}>
+        <LogoMark code={family.code} size={40} />
         <div>
-          <p style={{ margin: 0, fontWeight: 700, fontSize: 16, color: T.white, fontFamily: "'DM Sans', sans-serif" }}>Scan a bundle</p>
-          <p style={{ margin: "2px 0 0", fontSize: 13, color: "rgba(255,255,255,0.75)" }}>Photo-log 20 items in one shot</p>
+          <div style={{ fontFamily: "Playfair Display, serif", fontSize: 18, color: "#1a1a1a", lineHeight: 1 }}>Heirloom Loop</div>
+          <div style={{ fontSize: 11, color: "#888", fontFamily: "DM Mono, monospace" }}>{family.code} · {family.name}</div>
         </div>
-        <span style={{ marginLeft: "auto", color: "rgba(255,255,255,0.7)", fontSize: 20 }}>→</span>
       </div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
-        <Btn variant="secondary" onClick={() => onNavigate("log_give")} style={{ flex: 1, fontSize: 13 }}>↑ Log one item</Btn>
-        <Btn variant="ghost" onClick={() => onNavigate("log_receive")} style={{ flex: 1, fontSize: 13 }}>↓ Log received</Btn>
+
+      {/* Tab content */}
+      <div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
+        {tab === "home" && <HomeTab family={family} givenCount={givenItems.length} receivedCount={receivedItems.length} onScan={() => setSubScreen("scan")} />}
+        {tab === "given" && <GivenTab items={givenItems} families={families} onRefresh={loadItems} showToast={showToast} />}
+        {tab === "received" && <ReceivedTab items={receivedItems} families={families} />}
+        {tab === "all" && <AllItemsTab items={items} families={families} currentFamily={family} onRefresh={loadItems} showToast={showToast} />}
+        {tab === "community" && <CommunityTab families={families} items={items} currentFamily={family} />}
       </div>
-      {items.length > 0 && <>
-        <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Recent</p>
-        {items.slice(-3).reverse().map(item => (
-          <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
-            <div>
-              <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{item.name}</p>
-              <p style={{ margin: 0, fontSize: 12, color: T.muted }}>Size {item.size} · {item.ownerCode === myCode ? `→ ${item.givenToName || "available"}` : `← from ${families[item.ownerCode]?.name || item.ownerName}`}</p>
-            </div>
-            <Pill color={item.status === "available" ? T.sageLight : "#EEE8E0"} text={item.status === "available" ? T.sage : T.muted}>{item.status}</Pill>
-          </div>
-        ))}
-      </>}
+
+      {/* Bottom nav */}
+      <nav style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#fff", borderTop: "1px solid #e8e4de", display: "flex" }}>
+        {(["home", "given", "received", "all", "community"] as Tab[]).map(t => {
+          const icons: Record<Tab, string> = { home: "🏠", given: "📤", received: "📥", all: "📋", community: "🌿" };
+          const labels: Record<Tab, string> = { home: "Home", given: "Given", received: "Received", all: "All Items", community: "Community" };
+          return (
+            <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: "10px 0 8px", border: "none", background: "none", cursor: "pointer", fontSize: 18, color: tab === t ? "#3B5FA0" : "#aaa", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <span>{icons[t]}</span>
+              <span style={{ fontSize: 9, fontFamily: "DM Sans, sans-serif", color: tab === t ? "#3B5FA0" : "#aaa" }}>{labels[t]}</span>
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }
 
-// ── GIVEN ──────────────────────────────────────────────────
-function GivenScreen({ family, families, items, setItems, onNavigate }) {
-  const [returnModal, setReturnModal] = useState(null);
-  const [giveModal, setGiveModal] = useState(null);
-  const [giveTarget, setGiveTarget] = useState("");
-  const [saving, setSaving] = useState(false);
-  const myCode = family.code;
-  const myItems = items.filter(i => i.ownerCode === myCode);
-  const otherFamilies = Object.values(families).filter(f => f.code !== myCode);
-
-  const handleReturn = async (item) => {
-    setSaving(true);
-    await db.updateItem(item.id, { status: "returned", givenTo: null, givenToName: null });
-    setItems(p => p.map(i => i.id === item.id ? { ...i, status: "returned", givenTo: null, givenToName: null } : i));
-    setSaving(false); setReturnModal(null);
-  };
-  const handleGive = async (item) => {
-    if (!giveTarget) return;
-    setSaving(true);
-    const name = families[giveTarget]?.name || giveTarget;
-    await db.updateItem(item.id, { status: "out", givenTo: giveTarget, givenToName: name });
-    setItems(p => p.map(i => i.id === item.id ? { ...i, status: "out", givenTo: giveTarget, givenToName: name } : i));
-    setSaving(false); setGiveModal(null); setGiveTarget("");
-  };
+// ── Login Screen ──────────────────────────────────────────────────────────────
+function LoginScreen({ families, onLogin }: { families: Family[]; onLogin: (code: string, name: string) => void }) {
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [mode, setMode] = useState<"pick" | "new">(families.length > 0 ? "pick" : "new");
 
   return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="Given Out" subtitle={`${myItems.filter(i => i.status === "out").length} items out with others`} />
-      <div style={{ padding: "14px 18px" }}>
-        {myItems.length === 0
-          ? <div style={{ textAlign: "center", padding: "40px 0" }}><p style={{ fontSize: 32 }}>🌿</p><p style={{ color: T.muted, fontFamily: "'DM Sans', sans-serif" }}>Nothing logged yet.</p><Btn size="sm" onClick={() => onNavigate("scan")} style={{ marginTop: 10 }}>📸 Scan a bundle</Btn></div>
-          : myItems.map(item => <ItemCard key={item.id} item={item} currentCode={myCode} families={families} onReturn={i => setReturnModal(i)} onMarkGiven={i => { setGiveModal(i); setGiveTarget(""); }} />)
-        }
-      </div>
-      <Modal open={!!returnModal} onClose={() => setReturnModal(null)} title="Mark as returned">
-        {returnModal && <>
-          <p style={{ color: T.muted, fontSize: 14, marginBottom: 20 }}>Mark <strong style={{ color: T.ink }}>{returnModal.name}</strong> as returned to you?</p>
-          <div style={{ display: "flex", gap: 10 }}>
-            <Btn onClick={() => handleReturn(returnModal)} disabled={saving} style={{ flex: 1 }}>{saving ? "Saving…" : "Yes, it's back ✓"}</Btn>
-            <Btn variant="ghost" onClick={() => setReturnModal(null)} style={{ flex: 1 }}>Cancel</Btn>
-          </div>
-        </>}
-      </Modal>
-      <Modal open={!!giveModal} onClose={() => setGiveModal(null)} title="Give to a family">
-        {giveModal && <>
-          <p style={{ color: T.muted, fontSize: 14, marginBottom: 16 }}>Who is <strong style={{ color: T.ink }}>{giveModal.name}</strong> going to?</p>
-          {otherFamilies.length === 0
-            ? <p style={{ color: T.muted, fontSize: 13 }}>No other families yet — share the app link!</p>
-            : <>
-                <FieldSelect label="Select family" value={giveTarget} onChange={setGiveTarget} options={[{ value: "", label: "Choose…" }, ...otherFamilies.map(f => ({ value: f.code, label: f.name }))]} />
-                <Btn onClick={() => handleGive(giveModal)} disabled={!giveTarget || saving} style={{ width: "100%" }}>{saving ? "Saving…" : "Confirm →"}</Btn>
-              </>
-          }
-        </>}
-      </Modal>
-    </div>
-  );
-}
+    <div style={{ minHeight: "100vh", background: "#FAFAF7", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: "DM Sans, sans-serif" }}>
+      <LogoMark size={72} />
+      <div style={{ fontFamily: "Playfair Display, serif", fontSize: 28, color: "#1a1a1a", marginTop: 12 }}>Heirloom Loop</div>
+      <div style={{ fontSize: 14, color: "#888", marginBottom: 32 }}>Clothes that keep circling back</div>
 
-// ── RECEIVED ──────────────────────────────────────────────
-function ReceivedScreen({ family, families, items, setItems }) {
-  const [returnModal, setReturnModal] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const myCode = family.code;
-  const received = items.filter(i => i.givenTo === myCode && i.status === "out");
-  const handleReturn = async (item) => {
-    setSaving(true);
-    await db.updateItem(item.id, { status: "returned", givenTo: null, givenToName: null });
-    setItems(p => p.map(i => i.id === item.id ? { ...i, status: "returned", givenTo: null, givenToName: null } : i));
-    setSaving(false); setReturnModal(null);
-  };
-  return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="In My Care" subtitle={`${received.length} items from other families`} />
-      <div style={{ padding: "14px 18px" }}>
-        {received.length === 0
-          ? <div style={{ textAlign: "center", padding: "40px 0" }}><p style={{ fontSize: 32 }}>📦</p><p style={{ color: T.muted, fontFamily: "'DM Sans', sans-serif" }}>Nothing received yet.</p></div>
-          : received.map(item => <ItemCard key={item.id} item={item} currentCode={myCode} families={families} onReturn={i => setReturnModal(i)} />)
-        }
-      </div>
-      <Modal open={!!returnModal} onClose={() => setReturnModal(null)} title="Return this item">
-        {returnModal && <>
-          <p style={{ color: T.muted, fontSize: 14, marginBottom: 8 }}>Return <strong style={{ color: T.ink }}>{returnModal.name}</strong> to {families[returnModal.ownerCode]?.name || returnModal.ownerName}?</p>
-          {returnModal.recall && <div style={{ background: T.terraSoft, borderRadius: 10, padding: "10px 13px", marginBottom: 16 }}><p style={{ margin: 0, fontSize: 13, color: T.terracotta }}>🔁 This family wants this item back.</p></div>}
-          <div style={{ display: "flex", gap: 10 }}>
-            <Btn onClick={() => handleReturn(returnModal)} disabled={saving} style={{ flex: 1 }}>{saving ? "Saving…" : "Mark returned ↩"}</Btn>
-            <Btn variant="ghost" onClick={() => setReturnModal(null)} style={{ flex: 1 }}>Cancel</Btn>
-          </div>
-        </>}
-      </Modal>
-    </div>
-  );
-}
-
-// ── ALL ITEMS (Notion-style table) ─────────────────────────
-function AllItemsScreen({ family, families, items, setItems }) {
-  const myCode = family.code;
-  const [scope, setScope] = useState("everyone"); // "everyone" | "mine"
-  const [sortKey, setSortKey] = useState("date");
-  const [sortDir, setSortDir] = useState("desc");
-  const [filterSize, setFilterSize] = useState("");
-  const [filterStatus, setFilterStatus] = useState("");
-  const [filterOwner, setFilterOwner] = useState("");
-  const [editItem, setEditItem] = useState(null);
-  const [editForm, setEditForm] = useState({});
-  const [saving, setSaving] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-
-  // Scope
-  let rows = scope === "mine"
-    ? items.filter(i => i.ownerCode === myCode)
-    : items.slice();
-
-  // Filters
-  if (filterSize) rows = rows.filter(i => (i.size || "").toLowerCase() === filterSize.toLowerCase());
-  if (filterStatus) rows = rows.filter(i => i.status === filterStatus);
-  if (filterOwner) rows = rows.filter(i => i.ownerCode === filterOwner);
-
-  // Sort
-  rows.sort((a, b) => {
-    let av, bv;
-    switch (sortKey) {
-      case "name": av = (a.name || "").toLowerCase(); bv = (b.name || "").toLowerCase(); break;
-      case "size": av = (a.size || ""); bv = (b.size || ""); break;
-      case "status": av = a.status || ""; bv = b.status || ""; break;
-      case "owner": av = a.ownerCode || ""; bv = b.ownerCode || ""; break;
-      default: av = a.date || ""; bv = b.date || "";
-    }
-    if (av < bv) return sortDir === "asc" ? -1 : 1;
-    if (av > bv) return sortDir === "asc" ? 1 : -1;
-    return 0;
-  });
-
-  const toggleSort = (key) => {
-    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortKey(key); setSortDir("asc"); }
-  };
-
-  const uniqueSizes = [...new Set(items.map(i => i.size).filter(Boolean))].sort();
-  const ownerList = Object.values(families);
-  const statusOptions = ["available", "out", "returned"];
-  const activeFilters = [filterSize, filterStatus, filterOwner].filter(Boolean).length;
-
-  const openEdit = (item) => {
-    setEditItem(item);
-    setEditForm({ name: item.name, size: item.size, notes: item.notes || "", status: item.status, recall: item.recall });
-  };
-  const saveEdit = async () => {
-    setSaving(true);
-    try {
-      await db.updateItem(editItem.id, editForm);
-      setItems(p => p.map(i => i.id === editItem.id ? { ...i, ...editForm } : i));
-      setEditItem(null);
-    } catch {}
-    setSaving(false);
-  };
-  const handleDelete = async () => {
-    setSaving(true);
-    try {
-      await db.deleteItem(editItem.id);
-      setItems(p => p.filter(i => i.id !== editItem.id));
-      setEditItem(null);
-    } catch {}
-    setSaving(false);
-  };
-
-  const SortHeader = ({ label, k, w }) => (
-    <th onClick={() => toggleSort(k)} style={{
-      textAlign: "left", padding: "8px 8px", fontSize: 10, fontWeight: 700,
-      color: sortKey === k ? T.sage : T.muted, fontFamily: "'DM Mono', monospace",
-      textTransform: "uppercase", letterSpacing: "0.05em", cursor: "pointer",
-      whiteSpace: "nowrap", width: w, userSelect: "none",
-    }}>
-      {label}{sortKey === k ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
-    </th>
-  );
-
-  const statusColor = (s) => s === "available" ? { bg: T.sageLight, fg: T.sage } : s === "out" ? { bg: "#EEE8E0", fg: T.muted } : { bg: "#E8E0F0", fg: "#6A4FA0" };
-
-  return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="All Items" subtitle={`${rows.length} ${rows.length === 1 ? "item" : "items"}${activeFilters ? " · filtered" : ""}`} />
-
-      {/* scope toggle + filter button */}
-      <div style={{ padding: "12px 18px 8px", display: "flex", gap: 8, alignItems: "center" }}>
-        <div style={{ display: "flex", background: T.bg, borderRadius: 10, padding: 3, border: `1.5px solid ${T.border}` }}>
-          {[["everyone", "Everyone"], ["mine", "Just mine"]].map(([val, label]) => (
-            <button key={val} onClick={() => setScope(val)} style={{
-              padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer",
-              fontFamily: "'DM Sans', sans-serif", fontWeight: 700, fontSize: 12,
-              background: scope === val ? T.white : "transparent",
-              color: scope === val ? T.sage : T.muted,
-              boxShadow: scope === val ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
-            }}>{label}</button>
-          ))}
-        </div>
-        <button onClick={() => setShowFilters(s => !s)} style={{
-          marginLeft: "auto", padding: "8px 14px", borderRadius: 10, cursor: "pointer",
-          border: `1.5px solid ${activeFilters ? T.sage : T.border}`,
-          background: activeFilters ? T.sageLight : T.white,
-          color: activeFilters ? T.sage : T.muted, fontFamily: "'DM Sans', sans-serif",
-          fontWeight: 700, fontSize: 12,
-        }}>⚲ Filter{activeFilters ? ` (${activeFilters})` : ""}</button>
-      </div>
-
-      {/* filter panel */}
-      {showFilters && (
-        <div style={{ padding: "8px 18px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <div>
-            <label style={{ fontSize: 10, fontWeight: 700, color: T.muted, fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: "0.05em" }}>Size</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
-              <FilterChip active={!filterSize} onClick={() => setFilterSize("")}>All</FilterChip>
-              {uniqueSizes.map(s => <FilterChip key={s} active={filterSize === s} onClick={() => setFilterSize(s)}>{s}</FilterChip>)}
-            </div>
-          </div>
-          <div>
-            <label style={{ fontSize: 10, fontWeight: 700, color: T.muted, fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: "0.05em" }}>Status</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
-              <FilterChip active={!filterStatus} onClick={() => setFilterStatus("")}>All</FilterChip>
-              {statusOptions.map(s => <FilterChip key={s} active={filterStatus === s} onClick={() => setFilterStatus(s)}>{s}</FilterChip>)}
-            </div>
-          </div>
-          {scope === "everyone" && (
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, color: T.muted, fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: "0.05em" }}>Owner</label>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
-                <FilterChip active={!filterOwner} onClick={() => setFilterOwner("")}>All</FilterChip>
-                {ownerList.map(f => <FilterChip key={f.code} active={filterOwner === f.code} onClick={() => setFilterOwner(f.code)}>{f.code}</FilterChip>)}
+      {mode === "pick" && families.length > 0 ? (
+        <div style={{ width: "100%", maxWidth: 320 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12, color: "#333" }}>Welcome back — who are you?</div>
+          {families.map(f => (
+            <button key={f.id} onClick={() => onLogin(f.code, f.name)} style={{ width: "100%", padding: "14px 16px", marginBottom: 8, background: "#fff", border: "1px solid #e0dbd4", borderRadius: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, textAlign: "left" }}>
+              <LogoMark code={f.code} size={36} />
+              <div>
+                <div style={{ fontWeight: 600, color: "#1a1a1a" }}>{f.name}</div>
+                <div style={{ fontSize: 12, color: "#888", fontFamily: "DM Mono, monospace" }}>{f.code}</div>
               </div>
-            </div>
-          )}
+            </button>
+          ))}
+          <button onClick={() => setMode("new")} style={{ width: "100%", padding: 12, marginTop: 8, background: "none", border: "1px dashed #ccc", borderRadius: 12, cursor: "pointer", color: "#888", fontSize: 14 }}>+ New family</button>
+        </div>
+      ) : (
+        <div style={{ width: "100%", maxWidth: 320 }}>
+          <input placeholder="Family code (e.g. VPM)" value={code} onChange={e => setCode(e.target.value.toUpperCase().slice(0, 3))} maxLength={3} style={inputStyle} />
+          <input placeholder="Family name (e.g. The Millers)" value={name} onChange={e => setName(e.target.value)} style={inputStyle} />
+          <button onClick={() => code.length === 3 && name && onLogin(code, name)} style={btnStyle("#3B5FA0")}>Enter Heirloom Loop</button>
+          {families.length > 0 && <button onClick={() => setMode("pick")} style={{ ...btnStyle("#888"), marginTop: 8, background: "none", color: "#888", border: "1px solid #ddd" }}>← Back</button>}
         </div>
       )}
-
-      {/* table */}
-      <div style={{ padding: "4px 12px", overflowX: "auto" }}>
-        {rows.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "40px 0", color: T.muted }}>
-            <p style={{ fontSize: 28, marginBottom: 8 }}>▦</p>
-            <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 14 }}>No items match.</p>
-          </div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Sans', sans-serif" }}>
-            <thead>
-              <tr style={{ borderBottom: `1.5px solid ${T.border}` }}>
-                <SortHeader label="Item" k="name" />
-                <SortHeader label="Size" k="size" />
-                <SortHeader label="Status" k="status" />
-                {scope === "everyone" && <SortHeader label="Owner" k="owner" />}
-                <th style={{ width: 28 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(item => {
-                const sc = statusColor(item.status);
-                return (
-                  <tr key={item.id} onClick={() => openEdit(item)} style={{ borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}>
-                    <td style={{ padding: "10px 8px" }}>
-                      <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.ink }}>{item.name}</p>
-                      {item.notes ? <p style={{ margin: "1px 0 0", fontSize: 11, color: T.muted }}>{item.notes}</p> : null}
-                    </td>
-                    <td style={{ padding: "10px 8px", fontSize: 12, color: T.ink, fontFamily: "'DM Mono', monospace", whiteSpace: "nowrap" }}>{item.size}</td>
-                    <td style={{ padding: "10px 8px" }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: sc.bg, color: sc.fg, fontFamily: "'DM Mono', monospace", textTransform: "uppercase", whiteSpace: "nowrap" }}>{item.status}</span>
-                    </td>
-                    {scope === "everyone" && <td style={{ padding: "10px 8px", fontSize: 11, color: T.muted, fontFamily: "'DM Mono', monospace" }}>{item.ownerCode}</td>}
-                    <td style={{ padding: "10px 4px", textAlign: "center", color: T.muted, fontSize: 13 }}>✎</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* edit modal */}
-      <Modal open={!!editItem} onClose={() => setEditItem(null)} title="Edit item">
-        {editItem && (
-          <>
-            {editItem.ownerCode !== myCode && (
-              <div style={{ background: "#F0EBE0", borderRadius: 10, padding: "8px 12px", marginBottom: 14 }}>
-                <p style={{ margin: 0, fontSize: 12, color: T.muted, fontFamily: "'DM Sans', sans-serif" }}>This item belongs to {families[editItem.ownerCode]?.name || editItem.ownerCode}. Edits sync for everyone.</p>
-              </div>
-            )}
-            <FieldInput label="Item name" value={editForm.name} onChange={v => setEditForm(f => ({ ...f, name: v }))} required />
-            <FieldInput label="Size" value={editForm.size} onChange={v => setEditForm(f => ({ ...f, size: v }))} required />
-            <FieldInput label="Notes" value={editForm.notes} onChange={v => setEditForm(f => ({ ...f, notes: v }))} />
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "'DM Mono', monospace", marginBottom: 6 }}>Status</label>
-              <div style={{ display: "flex", gap: 8 }}>
-                {["available", "out", "returned"].map(s => (
-                  <button key={s} onClick={() => setEditForm(f => ({ ...f, status: s }))} style={{
-                    flex: 1, padding: "9px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontWeight: 700,
-                    border: `2px solid ${editForm.status === s ? T.sage : T.border}`,
-                    background: editForm.status === s ? T.sageLight : T.white,
-                    color: editForm.status === s ? T.sage : T.muted,
-                    fontFamily: "'DM Sans', sans-serif", textTransform: "capitalize",
-                  }}>{s}</button>
-                ))}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <Btn onClick={saveEdit} disabled={saving || !editForm.name?.trim() || !editForm.size?.trim()} style={{ flex: 1 }}>{saving ? "Saving…" : "Save changes"}</Btn>
-              <Btn variant="ghost" onClick={() => setEditItem(null)} style={{ flex: 1 }}>Cancel</Btn>
-            </div>
-            <button onClick={handleDelete} disabled={saving} style={{
-              width: "100%", marginTop: 12, padding: "10px", background: "none",
-              border: "none", color: T.terracotta, fontSize: 13, fontWeight: 600,
-              cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
-            }}>Delete this item</button>
-          </>
-        )}
-      </Modal>
     </div>
   );
 }
 
-const FilterChip = ({ children, active, onClick }) => (
-  <button onClick={onClick} style={{
-    padding: "5px 11px", borderRadius: 20, cursor: "pointer",
-    border: `1.5px solid ${active ? T.sage : T.border}`,
-    background: active ? T.sage : T.white,
-    color: active ? T.white : T.muted,
-    fontFamily: "'DM Mono', monospace", fontSize: 11, fontWeight: 700,
-    textTransform: "uppercase", letterSpacing: "0.03em", whiteSpace: "nowrap",
-  }}>{children}</button>
-);
-
-// ── COMMUNITY ─────────────────────────────────────────────
-function CommunityScreen({ family, families, items }) {
-  const myCode = family.code;
-  const available = items.filter(i => i.status === "available" && i.ownerCode !== myCode);
+// ── Home Tab ──────────────────────────────────────────────────────────────────
+function HomeTab({ family, givenCount, receivedCount, onScan }: { family: Family; givenCount: number; receivedCount: number; onScan: () => void }) {
   return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title="Community" subtitle={`${available.length} items available`} />
-      <div style={{ padding: "14px 18px" }}>
-        <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Families in your loop</p>
-        {Object.values(families).map(f => (
-          <div key={f.code} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.white, borderRadius: 12, border: `1.5px solid ${f.code === myCode ? T.sage : T.border}`, marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 34, height: 34, borderRadius: 34, background: T.sageLight, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: 700, color: T.sage }}>{f.code}</div>
-              <div>
-                <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{f.name} {f.code === myCode && <span style={{ color: T.sageMid, fontWeight: 400, fontSize: 12 }}>(you)</span>}</p>
-                {f.kids?.length > 0 && <p style={{ margin: 0, fontSize: 12, color: T.muted }}>{f.kids.join(", ")}</p>}
-              </div>
-            </div>
-            <Pill color={f.code === myCode ? T.sageLight : "#EEE8E0"} text={f.code === myCode ? T.sage : T.muted}>{items.filter(i => i.ownerCode === f.code).length} items</Pill>
-          </div>
-        ))}
-        {available.length > 0 && <>
-          <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", margin: "20px 0 10px" }}>Available to claim</p>
-          {available.map(item => (
-            <Card key={item.id}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <div>
-                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{item.name}</p>
-                  <p style={{ margin: "2px 0 6px", fontSize: 12, color: T.muted }}>Size {item.size}{item.notes ? ` · ${item.notes}` : ""}</p>
-                  <Pill color="#F0EBE0" text={T.muted}>From {families[item.ownerCode]?.name || item.ownerName}</Pill>
-                </div>
-                <Pill>Free</Pill>
-              </div>
-            </Card>
-          ))}
-        </>}
+    <div style={{ padding: 20 }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontFamily: "Playfair Display, serif", fontSize: 22, color: "#1a1a1a" }}>Hello, {family.name} 👋</div>
+        <div style={{ fontSize: 14, color: "#888", marginTop: 2 }}>Here's your loop at a glance</div>
       </div>
+
+      {/* Stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
+        <StatCard label="Items out" value={givenCount} color="#3B5FA0" />
+        <StatCard label="Items in" value={receivedCount} color="#7A9E7E" />
+      </div>
+
+      {/* Scan CTA */}
+      <button onClick={onScan} style={{ width: "100%", padding: "20px 16px", background: "linear-gradient(135deg, #3B5FA0, #2a4a80)", border: "none", borderRadius: 16, cursor: "pointer", color: "#fff", textAlign: "left", marginBottom: 12 }}>
+        <div style={{ fontSize: 24, marginBottom: 4 }}>📸</div>
+        <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "Playfair Display, serif" }}>Scan a bundle</div>
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.75)", marginTop: 2 }}>Giving or receiving — photo-log in one shot</div>
+      </button>
     </div>
   );
 }
 
-// ── LOG SINGLE ─────────────────────────────────────────────
-function LogItemScreen({ family, families, items, setItems, mode, onBack }) {
-  const isGiving = mode === "give";
-  const [form, setForm] = useState({ name: "", size: "", notes: "", recall: true, givenTo: "", date: new Date().toISOString().split("T")[0] });
-  const [saved, setSaved] = useState(false);
+function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e8e4de", borderRadius: 12, padding: "16px 14px" }}>
+      <div style={{ fontSize: 28, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: 13, color: "#888", marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+// ── Photo Scan Screen ─────────────────────────────────────────────────────────
+interface ScannedItem { description: string; size: string; condition: string; }
+
+function PhotoScanScreen({ family, families, onSaved, onCancel }: {
+  family: Family; families: Family[];
+  onSaved: (direction: "given" | "received") => void;
+  onCancel: () => void;
+}) {
+  const [step, setStep] = useState<"direction" | "upload" | "scanning" | "review" | "details">("direction");
+  const [direction, setDirection] = useState<"given" | "received" | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [scanned, setScanned] = useState<ScannedItem[]>([]);
+  const [otherFamily, setOtherFamily] = useState("");
+  const [recall, setRecall] = useState("want_back");
   const [saving, setSaving] = useState(false);
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const otherFamilies = Object.values(families).filter(f => f.code !== family.code);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleSave = async () => {
-    if (!form.name.trim() || !form.size.trim()) return;
-    setSaving(true);
-    const newItem = {
-      id: uid(), ownerCode: family.code, ownerName: family.name,
-      name: form.name.trim(), size: form.size.trim(), notes: form.notes.trim(),
-      recall: form.recall, date: form.date,
-      status: isGiving && form.givenTo ? "out" : "available",
-      givenTo: isGiving && form.givenTo ? form.givenTo : null,
-      givenToName: isGiving && form.givenTo ? (families[form.givenTo]?.name || form.givenTo) : null,
+  function pickImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    setStep("scanning");
+    scanImage(file);
+  }
+
+  async function scanImage(file: File) {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = (reader.result as string).split(",")[1];
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/scan-clothing`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON}` },
+          body: JSON.stringify({ image: base64 }),
+        });
+        const data = await res.json();
+        const items: ScannedItem[] = (data.items || []).map((item: ScannedItem) => ({ description: item.description || "", size: item.size || "", condition: item.condition || "good" }));
+        setScanned(items);
+        setStep("review");
+      } catch {
+        setScanned([]);
+        setStep("review");
+      }
     };
-    await db.insertItem(newItem);
-    setItems(p => [...p, newItem]);
-    setSaving(false); setSaved(true);
-  };
+    reader.readAsDataURL(file);
+  }
 
-  if (saved) return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 400, padding: "40px 24px", textAlign: "center" }}>
-      <div style={{ fontSize: 52, marginBottom: 16 }}>🌿</div>
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 24, color: T.ink, margin: "0 0 8px" }}>Logged!</h2>
-      <p style={{ color: T.muted, fontSize: 14, marginBottom: 28 }}><strong style={{ color: T.ink }}>{form.name}</strong> (Size {form.size}) saved.</p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-        <Btn onClick={() => { setForm({ name: "", size: "", notes: "", recall: true, givenTo: "", date: new Date().toISOString().split("T")[0] }); setSaved(false); }} style={{ width: "100%" }}>Log another</Btn>
-        <Btn variant="ghost" onClick={onBack} style={{ width: "100%" }}>Done</Btn>
-      </div>
-    </div>
-  );
+  async function handleLogAll() {
+    if (!imageFile) return;
+    setSaving(true);
+    setUploading(true);
+
+    // Upload bundle photo
+    const ext = imageFile.name.split(".").pop() || "jpg";
+    const photoPath = `${family.code}-${Date.now()}.${ext}`;
+    const photoUrl = await sb.storage.upload("bundle-photos", photoPath, imageFile);
+    setUploading(false);
+
+    // Save items
+    const other = families.find(f => f.code === otherFamily);
+    for (const item of scanned) {
+      const record: Partial<Item> = {
+        description: item.description,
+        size: item.size,
+        condition: item.condition,
+        owner_code: direction === "given" ? family.code : (other?.code || family.code),
+        status: direction === "given" ? `out → ${other?.name || otherFamily || "friend"}` : "available",
+        given_to: direction === "given" ? (other?.code || null) : null,
+        recall_preference: direction === "given" ? recall : null,
+        received_from: direction === "received" ? (other?.code || null) : null,
+        bundle_photo_url: photoUrl,
+      };
+      await sb.from("items").insert(record);
+    }
+    setSaving(false);
+    onSaved(direction!);
+  }
+
+  const containerStyle: React.CSSProperties = { fontFamily: "DM Sans, sans-serif", maxWidth: 480, margin: "0 auto", minHeight: "100vh", background: "#FAFAF7", display: "flex", flexDirection: "column" };
+  const headerStyle: React.CSSProperties = { background: "#fff", borderBottom: "1px solid #e8e4de", padding: "14px 20px", display: "flex", alignItems: "center", gap: 12 };
 
   return (
-    <div style={{ paddingBottom: 20 }}>
-      <TopBar title={isGiving ? "Log a Handoff" : "Log Received Item"} subtitle="Single item" onBack={onBack} />
-      <div style={{ padding: "16px 18px" }}>
-        <FieldInput label="Item name" value={form.name} onChange={v => set("name", v)} placeholder="e.g. Floral Sunsuit" required />
-        <FieldInput label="Size" value={form.size} onChange={v => set("size", v)} placeholder="e.g. 12M, 2T" required />
-        <FieldInput label="Notes" value={form.notes} onChange={v => set("notes", v)} placeholder="e.g. 3-pack, barely worn" />
-        <FieldInput label="Date" value={form.date} onChange={v => set("date", v)} type="date" />
-        {isGiving && <>
-          <FieldSelect label="Giving to (optional)" value={form.givenTo} onChange={v => set("givenTo", v)} options={[{ value: "", label: "Available to anyone" }, ...otherFamilies.map(f => ({ value: f.code, label: f.name }))]} />
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "'DM Mono', monospace", marginBottom: 8 }}>Preference</label>
-            <div style={{ display: "flex", gap: 10 }}>
-              {[{ val: true, icon: "🔁", label: "I want it back" }, { val: false, icon: "→", label: "Free to flow" }].map(opt => (
-                <div key={String(opt.val)} onClick={() => set("recall", opt.val)} style={{ flex: 1, padding: "12px", borderRadius: 12, cursor: "pointer", textAlign: "center", border: `2px solid ${form.recall === opt.val ? T.sage : T.border}`, background: form.recall === opt.val ? T.sageLight : T.white }}>
-                  <p style={{ margin: 0, fontSize: 15 }}>{opt.icon}</p>
-                  <p style={{ margin: "3px 0 0", fontWeight: 700, fontSize: 13, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{opt.label}</p>
-                </div>
+    <div style={containerStyle}>
+      <div style={headerStyle}>
+        <button onClick={onCancel} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#555" }}>←</button>
+        <div style={{ fontFamily: "Playfair Display, serif", fontSize: 17 }}>Scan a Bundle</div>
+      </div>
+
+      <div style={{ padding: 20, flex: 1 }}>
+
+        {/* Step: Direction */}
+        {step === "direction" && (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#333", marginBottom: 16 }}>Are you giving or receiving this bundle?</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {(["given", "received"] as const).map(d => (
+                <button key={d} onClick={() => { setDirection(d); setStep("upload"); }} style={{ padding: "24px 12px", background: "#fff", border: "2px solid #e0dbd4", borderRadius: 16, cursor: "pointer", fontSize: 28, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                  <span>{d === "given" ? "📤" : "📥"}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "#333" }}>{d === "given" ? "I'm giving" : "I'm receiving"}</span>
+                </button>
               ))}
             </div>
           </div>
-        </>}
-        <Btn onClick={handleSave} disabled={!form.name.trim() || !form.size.trim() || saving} style={{ width: "100%", marginTop: 8 }}>{saving ? "Saving…" : "Save item →"}</Btn>
+        )}
+
+        {/* Step: Upload */}
+        {step === "upload" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>📸</div>
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Take or upload a photo</div>
+            <div style={{ fontSize: 14, color: "#888", marginBottom: 24 }}>Lay the clothes flat and snap one photo of the whole bundle</div>
+            <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={pickImage} style={{ display: "none" }} />
+            <button onClick={() => fileRef.current?.click()} style={btnStyle("#3B5FA0")}>Choose Photo</button>
+          </div>
+        )}
+
+        {/* Step: Scanning */}
+        {step === "scanning" && (
+          <div style={{ textAlign: "center", paddingTop: 40 }}>
+            {imagePreview && <img src={imagePreview} alt="bundle" style={{ width: "100%", borderRadius: 12, marginBottom: 20, maxHeight: 260, objectFit: "cover" }} />}
+            <div style={{ fontSize: 16, color: "#3B5FA0", fontWeight: 600 }}>Scanning your bundle…</div>
+            <div style={{ fontSize: 13, color: "#888", marginTop: 6 }}>AI is identifying each item 🌿</div>
+          </div>
+        )}
+
+        {/* Step: Review */}
+        {step === "review" && (
+          <div>
+            {imagePreview && <img src={imagePreview} alt="bundle" style={{ width: "100%", borderRadius: 12, marginBottom: 16, maxHeight: 200, objectFit: "cover" }} />}
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Review scanned items ({scanned.length})</div>
+            {scanned.map((item, i) => (
+              <div key={i} style={{ background: "#fff", border: "1px solid #e8e4de", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                <input value={item.description} onChange={e => setScanned(s => s.map((x, j) => j === i ? { ...x, description: e.target.value } : x))} style={{ ...inputStyle, marginBottom: 4, padding: "6px 8px" }} />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <input placeholder="Size" value={item.size} onChange={e => setScanned(s => s.map((x, j) => j === i ? { ...x, size: e.target.value } : x))} style={{ ...inputStyle, padding: "6px 8px", marginBottom: 0 }} />
+                  <select value={item.condition} onChange={e => setScanned(s => s.map((x, j) => j === i ? { ...x, condition: e.target.value } : x))} style={{ ...inputStyle, padding: "6px 8px", marginBottom: 0 }}>
+                    <option value="excellent">Excellent</option>
+                    <option value="good">Good</option>
+                    <option value="fair">Fair</option>
+                  </select>
+                </div>
+              </div>
+            ))}
+            <button onClick={() => setScanned(s => [...s, { description: "", size: "", condition: "good" }])} style={{ width: "100%", padding: 10, background: "none", border: "1px dashed #ccc", borderRadius: 10, cursor: "pointer", color: "#888", marginBottom: 12 }}>+ Add item</button>
+            <button onClick={() => setStep("details")} style={btnStyle("#3B5FA0")}>Continue →</button>
+          </div>
+        )}
+
+        {/* Step: Details */}
+        {step === "details" && (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>{direction === "given" ? "Who are you giving to?" : "Who gave you this bundle?"}</div>
+            <select value={otherFamily} onChange={e => setOtherFamily(e.target.value)} style={inputStyle}>
+              <option value="">— {direction === "given" ? "Select family" : "Select or skip"} —</option>
+              {families.filter(f => f.code !== family.code).map(f => (
+                <option key={f.id} value={f.code}>{f.name} ({f.code})</option>
+              ))}
+            </select>
+
+            {direction === "given" && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#333" }}>Recall preference</div>
+                {[{ value: "want_back", label: "🔄 I want these back" }, { value: "free_to_flow", label: "🌿 Free to flow" }].map(opt => (
+                  <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: recall === opt.value ? "#EEF2FA" : "#fff", border: `1px solid ${recall === opt.value ? "#3B5FA0" : "#e0dbd4"}`, borderRadius: 10, marginBottom: 8, cursor: "pointer" }}>
+                    <input type="radio" name="recall" value={opt.value} checked={recall === opt.value} onChange={() => setRecall(opt.value)} />
+                    <span style={{ fontSize: 14 }}>{opt.label}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <button onClick={handleLogAll} disabled={saving} style={btnStyle(saving ? "#aaa" : "#3B5FA0")}>
+              {uploading ? "Uploading photo…" : saving ? "Saving…" : `Log ${scanned.length} items`}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ── ONBOARDING ─────────────────────────────────────────────
-function OnboardingScreen({ existingFamilies, onComplete, onLogin }) {
-  const familyList = Object.values(existingFamilies);
-  const [mode, setMode] = useState(familyList.length > 0 ? "choose" : "new");
-  const [name, setName] = useState(""); const [code, setCode] = useState(""); const [kids, setKids] = useState(""); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);
-  const codeFromName = n => n.trim().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3).padEnd(3, "X");
-
-  const handleSubmit = async () => {
-    if (!name.trim()) { setError("Please enter your name"); return; }
-    if (code.length < 3) { setError("Code must be 3 letters"); return; }
-    if (existingFamilies[code]) { setError(`Code ${code} is taken — if that's you, go back and tap your name`); return; }
-    setSaving(true);
-    const profile = { code, name: name.trim(), kids: kids.split(",").map(k => k.trim()).filter(Boolean) };
-    try { await db.upsertFamily(profile); onComplete(profile); }
-    catch { setError("Couldn't connect — check your network."); }
-    setSaving(false);
-  };
-
-  const Header = () => (
-    <div style={{ textAlign: "center", marginBottom: 32 }}>
-      <div style={{ width: 80, height: 80, margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <LogoMark size={72} />
-      </div>
-      <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 30, color: T.ink, margin: "0 0 8px" }}>Heirloom Loop</h1>
-      <p style={{ color: T.muted, fontSize: 14, margin: 0, lineHeight: 1.6 }}>Track the clothes you give and receive.<br />Stay connected with families you trust.</p>
+// ── Given Tab ─────────────────────────────────────────────────────────────────
+function GivenTab({ items, families, onRefresh, showToast }: { items: Item[]; families: Family[]; onRefresh: () => void; showToast: (m: string) => void }) {
+  async function markReturned(id: string) {
+    await sb.from("items").update({ status: "returned", given_to: null }).eq("id", id);
+    onRefresh();
+    showToast("Marked as returned ✓");
+  }
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ fontFamily: "Playfair Display, serif", fontSize: 20, marginBottom: 16 }}>Items You've Given</div>
+      {items.length === 0 && <EmptyState icon="📤" msg="Nothing out on loan yet" />}
+      {items.map(item => (
+        <ItemCard key={item.id} item={item} families={families} onMarkReturned={() => markReturned(item.id)} showPhoto />
+      ))}
     </div>
   );
+}
 
-  if (mode === "choose") {
-    return (
-      <div style={{ minHeight: "100vh", background: T.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
-        <Header />
-        <div style={{ background: T.white, borderRadius: 20, padding: "20px", border: `1.5px solid ${T.border}` }}>
-          <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 13, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>Welcome back — who are you?</p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {familyList.map(f => (
-              <button key={f.code} onClick={() => onLogin(f.code)} style={{
-                display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
-                background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 12,
-                cursor: "pointer", textAlign: "left", width: "100%",
-              }}>
-                <div style={{ width: 38, height: 38, borderRadius: 38, background: T.sageLight, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', monospace", fontSize: 13, fontWeight: 700, color: T.sage, flexShrink: 0 }}>{f.code}</div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>{f.name}</p>
-                  {f.kids?.length > 0 && <p style={{ margin: 0, fontSize: 12, color: T.muted }}>{f.kids.join(", ")}</p>}
-                </div>
-                <span style={{ color: T.sage, fontSize: 18 }}>→</span>
-              </button>
-            ))}
-          </div>
+// ── Received Tab ──────────────────────────────────────────────────────────────
+function ReceivedTab({ items, families }: { items: Item[]; families: Family[] }) {
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ fontFamily: "Playfair Display, serif", fontSize: 20, marginBottom: 16 }}>Items You've Received</div>
+      {items.length === 0 && <EmptyState icon="📥" msg="No received items yet" />}
+      {items.map(item => <ItemCard key={item.id} item={item} families={families} showPhoto />)}
+    </div>
+  );
+}
+
+// ── Item Card ─────────────────────────────────────────────────────────────────
+function ItemCard({ item, families, onMarkReturned, showPhoto }: { item: Item; families: Family[]; onMarkReturned?: () => void; showPhoto?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const givenToFamily = families.find(f => f.code === item.given_to);
+  const fromFamily = families.find(f => f.code === item.received_from);
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e8e4de", borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+      <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }} onClick={() => setExpanded(e => !e)}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#1a1a1a" }}>{item.description}</div>
+          <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>Size {item.size} · {item.condition}</div>
         </div>
-        <button onClick={() => { setMode("new"); setName(""); setCode(""); setError(""); }} style={{
-          background: "none", border: "none", color: T.sage, fontSize: 14, fontWeight: 700,
-          cursor: "pointer", marginTop: 20, fontFamily: "'DM Sans', sans-serif",
-        }}>+ My family is new here</button>
-        <p style={{ textAlign: "center", fontSize: 12, color: T.muted, marginTop: 16, lineHeight: 1.6 }}>🔒 Shared only with families in your group.</p>
+        <StatusPill status={item.status} />
+        <span style={{ color: "#aaa", fontSize: 12 }}>{expanded ? "▲" : "▼"}</span>
       </div>
-    );
+
+      {expanded && (
+        <div style={{ borderTop: "1px solid #f0ece6", padding: "12px 14px" }}>
+          {showPhoto && item.bundle_photo_url && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Bundle photo</div>
+              <img src={item.bundle_photo_url} alt="bundle" style={{ width: "100%", borderRadius: 8, maxHeight: 200, objectFit: "cover" }} />
+            </div>
+          )}
+          {givenToFamily && <div style={{ fontSize: 13, color: "#555", marginBottom: 4 }}>📤 Given to: <strong>{givenToFamily.name}</strong></div>}
+          {fromFamily && <div style={{ fontSize: 13, color: "#555", marginBottom: 4 }}>📥 From: <strong>{fromFamily.name}</strong></div>}
+          {item.recall_preference && <div style={{ fontSize: 13, color: "#555", marginBottom: 8 }}>{item.recall_preference === "want_back" ? "🔄 Want back" : "🌿 Free to flow"}</div>}
+          {onMarkReturned && item.status.startsWith("out") && (
+            <button onClick={onMarkReturned} style={{ ...btnStyle("#7A9E7E"), padding: "8px 14px", fontSize: 13 }}>Mark as returned</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── All Items Tab ─────────────────────────────────────────────────────────────
+function AllItemsTab({ items, families, currentFamily, onRefresh, showToast }: { items: Item[]; families: Family[]; currentFamily: Family; onRefresh: () => void; showToast: (m: string) => void }) {
+  const [filter, setFilter] = useState<"all" | "mine">("mine");
+  const [sizeFilter, setSizeFilter] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editData, setEditData] = useState<Partial<Item>>({});
+
+  const displayed = items
+    .filter(i => filter === "all" || i.owner_code === currentFamily.code)
+    .filter(i => !sizeFilter || i.size === sizeFilter);
+
+  const sizes = [...new Set(items.map(i => i.size).filter(Boolean))].sort();
+
+  async function saveEdit(id: string) {
+    await sb.from("items").update(editData).eq("id", id);
+    setEditingId(null);
+    onRefresh();
+    showToast("Item updated ✓");
+  }
+
+  async function deleteItem(id: string) {
+    if (!confirm("Delete this item?")) return;
+    await sb.from("items").delete().eq("id", id);
+    onRefresh();
+    showToast("Item deleted");
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
-      <Header />
-      <div style={{ background: T.white, borderRadius: 20, padding: "24px 20px", border: `1.5px solid ${T.border}` }}>
-        <FieldInput label="Your first name" value={name} onChange={v => { setName(v); setCode(codeFromName(v)); }} placeholder="e.g. Praise" required />
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "'DM Mono', monospace", marginBottom: 5 }}>Family code <span style={{ color: T.terracotta }}>*</span></label>
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input value={code} onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3))} maxLength={3} placeholder="PSM" style={{ width: 80, padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${T.border}`, fontFamily: "'DM Mono', monospace", fontSize: 18, color: T.sage, fontWeight: 700, textAlign: "center", outline: "none" }} />
-            <p style={{ margin: 0, fontSize: 12, color: T.muted, flex: 1 }}>3 letters — goes on your labels</p>
-          </div>
+    <div style={{ padding: 20 }}>
+      <div style={{ fontFamily: "Playfair Display, serif", fontSize: 20, marginBottom: 12 }}>All Items</div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        {(["mine", "all"] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)} style={{ padding: "6px 14px", borderRadius: 20, border: "none", cursor: "pointer", background: filter === f ? "#3B5FA0" : "#e8e4de", color: filter === f ? "#fff" : "#555", fontSize: 13 }}>
+            {f === "mine" ? "My items" : "Everyone"}
+          </button>
+        ))}
+        <select value={sizeFilter} onChange={e => setSizeFilter(e.target.value)} style={{ padding: "6px 12px", borderRadius: 20, border: "1px solid #e0dbd4", background: "#fff", fontSize: 13, color: "#555" }}>
+          <option value="">All sizes</option>
+          {sizes.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+
+      {displayed.length === 0 && <EmptyState icon="📋" msg="No items to show" />}
+
+      {displayed.map(item => (
+        <div key={item.id} style={{ background: "#fff", border: "1px solid #e8e4de", borderRadius: 12, marginBottom: 8, overflow: "hidden" }}>
+          {editingId === item.id ? (
+            <div style={{ padding: "12px 14px" }}>
+              <input value={editData.description ?? item.description} onChange={e => setEditData(d => ({ ...d, description: e.target.value }))} style={inputStyle} />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <input placeholder="Size" value={editData.size ?? item.size} onChange={e => setEditData(d => ({ ...d, size: e.target.value }))} style={{ ...inputStyle, marginBottom: 0 }} />
+                <select value={editData.condition ?? item.condition} onChange={e => setEditData(d => ({ ...d, condition: e.target.value }))} style={{ ...inputStyle, marginBottom: 0 }}>
+                  <option value="excellent">Excellent</option>
+                  <option value="good">Good</option>
+                  <option value="fair">Fair</option>
+                </select>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => saveEdit(item.id)} style={{ ...btnStyle("#3B5FA0"), flex: 1, padding: "8px 0" }}>Save</button>
+                <button onClick={() => setEditingId(null)} style={{ ...btnStyle("#aaa"), flex: 1, padding: "8px 0" }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+              {item.bundle_photo_url && (
+                <img src={item.bundle_photo_url} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1a1a1a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.description}</div>
+                <div style={{ fontSize: 12, color: "#888", marginTop: 1 }}>Size {item.size} · {item.condition} · <span style={{ fontFamily: "DM Mono, monospace" }}>{item.owner_code}</span></div>
+              </div>
+              <StatusPill status={item.status} />
+              {item.owner_code === currentFamily.code && (
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button onClick={() => { setEditingId(item.id); setEditData({}); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>✏️</button>
+                  <button onClick={() => deleteItem(item.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>🗑️</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        <FieldInput label="Kids' names (comma separated)" value={kids} onChange={setKids} placeholder="e.g. Valor, Baby" />
-        {error && <p style={{ color: T.terracotta, fontSize: 13, margin: "0 0 12px" }}>{error}</p>}
-        <Btn onClick={handleSubmit} disabled={saving} style={{ width: "100%" }}>{saving ? "Joining…" : "Join Heirloom Loop →"}</Btn>
-      </div>
-      {familyList.length > 0 && (
-        <button onClick={() => { setMode("choose"); setError(""); }} style={{
-          background: "none", border: "none", color: T.muted, fontSize: 14,
-          cursor: "pointer", marginTop: 18, fontFamily: "'DM Sans', sans-serif",
-        }}>← I'm a returning family</button>
-      )}
-      <p style={{ textAlign: "center", fontSize: 12, color: T.muted, marginTop: 16, lineHeight: 1.6 }}>🔒 Shared only with families in your group.</p>
+      ))}
     </div>
   );
 }
 
-// ── ROOT ───────────────────────────────────────────────────
-export default function App() {
-  const [loading, setLoading] = useState(true);
-  const [families, setFamilies] = useState({});
-  const [items, setItems] = useState([]);
-  const [currentCode, setCurrentCode] = useState(null);
-  const [tab, setTab] = useState("home");
-  const [subScreen, setSubScreen] = useState(null);
-  const [syncing, setSyncing] = useState(false);
-  const [toast, setToast] = useState({ message: "", visible: false });
-
-  const showToast = (msg) => {
-    setToast({ message: msg, visible: true });
-    setTimeout(() => setToast(t => ({ ...t, visible: false })), 2500);
-  };
-
-  // Initial load
-  useEffect(() => {
-    const code = getSessionCode();
-    Promise.all([db.getFamilies(), db.getItems()]).then(([fams, its]) => {
-      const famMap = {};
-      fams.forEach(f => { famMap[f.code] = f; });
-      setFamilies(famMap);
-      setItems(its);
-      if (code && famMap[code]) setCurrentCode(code);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
-
-  // Polling for real-time sync (every 5s)
-  useEffect(() => {
-    if (!currentCode) return;
-    const stop = db.subscribe((fams, its) => {
-      const famMap = {};
-      fams.forEach(f => { famMap[f.code] = f; });
-      setFamilies(famMap);
-      setItems(its);
-    });
-    return stop;
-  }, [currentCode]);
-
-  const handleOnboard = (profile) => {
-    setFamilies(f => ({ ...f, [profile.code]: profile }));
-    setCurrentCode(profile.code);
-    setSessionCode(profile.code);
-    showToast("Welcome to the loop! 🌿");
-  };
-
-  const handleLogin = (code) => {
-    setCurrentCode(code);
-    setSessionCode(code);
-    showToast(`Welcome back! 🌿`);
-  };
-
-  if (loading) return (
-    <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
-      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
-      <p style={{ fontFamily: "'Playfair Display', serif", color: T.sage, fontSize: 20, margin: 0 }}>🌿 Heirloom Loop</p>
-      <p style={{ fontFamily: "'DM Sans', sans-serif", color: T.muted, fontSize: 13, margin: 0 }}>Connecting…</p>
-    </div>
-  );
-
-  const family = currentCode ? families[currentCode] : null;
-
-  if (!family) return (
-    <>
-      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
-      <OnboardingScreen existingFamilies={families} onComplete={handleOnboard} onLogin={handleLogin} />
-    </>
-  );
-
-  const handleNavigate = t => {
-    if (["scan", "log_give", "log_receive"].includes(t)) setSubScreen(t);
-    else { setTab(t); setSubScreen(null); }
-  };
-
-  const renderMain = () => {
-    if (subScreen === "scan") return (
-      <PhotoScanScreen family={family} families={families}
-        onBack={() => setSubScreen(null)}
-        onSaved={() => { setSubScreen(null); setTab("given"); showToast("Bundle logged! 🌿"); }}
-        onInsertItems={newItems => { setItems(p => [...p, ...newItems]); }} />
-    );
-    if (subScreen === "log_give") return <LogItemScreen family={family} families={families} items={items} setItems={setItems} mode="give" onBack={() => setSubScreen(null)} />;
-    if (subScreen === "log_receive") return <LogItemScreen family={family} families={families} items={items} setItems={setItems} mode="receive" onBack={() => setSubScreen(null)} />;
-    switch (tab) {
-      case "home": return <HomeScreen family={family} families={families} items={items} onNavigate={handleNavigate} syncing={syncing} />;
-      case "given": return <GivenScreen family={family} families={families} items={items} setItems={setItems} onNavigate={handleNavigate} />;
-      case "received": return <ReceivedScreen family={family} families={families} items={items} setItems={setItems} />;
-      case "all": return <AllItemsScreen family={family} families={families} items={items} setItems={setItems} />;
-      case "community": return <CommunityScreen family={family} families={families} items={items} />;
-      default: return null;
-    }
-  };
-
+// ── Community Tab ─────────────────────────────────────────────────────────────
+function CommunityTab({ families, items, currentFamily }: { families: Family[]; items: Item[]; currentFamily: Family }) {
   return (
-    <>
-      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
-      <style>{`* { box-sizing: border-box; } body { margin: 0; background: ${T.bg}; }`}</style>
-      <div style={{ maxWidth: 480, margin: "0 auto", minHeight: "100vh", background: T.bg, display: "flex", flexDirection: "column", fontFamily: "'DM Sans', sans-serif" }}>
-        <div style={{ flex: 1, overflowY: "auto" }}>{renderMain()}</div>
-        {!subScreen && <BottomNav active={tab} onChange={setTab} />}
-      </div>
-      <Toast message={toast.message} visible={toast.visible} />
-    </>
+    <div style={{ padding: 20 }}>
+      <div style={{ fontFamily: "Playfair Display, serif", fontSize: 20, marginBottom: 16 }}>The Loop Community</div>
+      {families.filter(f => f.code !== currentFamily.code).map(f => {
+        const theirItems = items.filter(i => i.owner_code === f.code && i.status === "available");
+        return (
+          <div key={f.id} style={{ background: "#fff", border: "1px solid #e8e4de", borderRadius: 12, padding: "14px 16px", marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+              <LogoMark code={f.code} size={32} />
+              <div>
+                <div style={{ fontWeight: 600, color: "#1a1a1a" }}>{f.name}</div>
+                <div style={{ fontSize: 12, color: "#888", fontFamily: "DM Mono, monospace" }}>{f.code}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 13, color: "#555" }}>{theirItems.length} item{theirItems.length !== 1 ? "s" : ""} available</div>
+          </div>
+        );
+      })}
+      {families.length <= 1 && <EmptyState icon="🌿" msg="No other families in the loop yet" />}
+    </div>
   );
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function EmptyState({ icon, msg }: { icon: string; msg: string }) {
+  return (
+    <div style={{ textAlign: "center", padding: "40px 20px", color: "#aaa" }}>
+      <div style={{ fontSize: 36, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 14 }}>{msg}</div>
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = { width: "100%", padding: "10px 12px", border: "1px solid #e0dbd4", borderRadius: 10, fontSize: 14, fontFamily: "DM Sans, sans-serif", background: "#fff", boxSizing: "border-box", marginBottom: 10 };
+function btnStyle(bg: string): React.CSSProperties { return { width: "100%", padding: "13px 0", background: bg, color: "#fff", border: "none", borderRadius: 12, cursor: "pointer", fontSize: 15, fontWeight: 600, fontFamily: "DM Sans, sans-serif" }; }
