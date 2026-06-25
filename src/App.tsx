@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://qriajzvzfhdwqnszjxht.supabase.co";
-const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFyaWFqenZ6Zmhkd3Fuc3pqeGh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY1NzAzNzYsImV4cCI6MjA2MjE0NjM3Nn0.6SqgQLvSuv4zMNGBvPMPLWEGxbKsNgFmkrHZNEFIHKE";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFyaWFqenZ6Zmhkd3Fuc3pqeGh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MjA1MzAsImV4cCI6MjA5NTk5NjUzMH0.MqHy1xhCRxggZ8rl-Rd5FlbPPycVV6QanhfItv8-7tQ";
 
 const sb = {
   from: (table: string) => ({
