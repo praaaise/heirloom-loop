@@ -263,6 +263,7 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
   const [scanError, setScanError] = useState("");
   const [givenTo, setGivenTo] = useState("");
   const [receivedFrom, setReceivedFrom] = useState("");
+  const [returnTo, setReturnTo] = useState("");
   const [recall, setRecall] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
@@ -332,6 +333,9 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
         notes: item._notes || "", recall, date: today,
         bundlePhotoUrl,
       };
+      if (direction === "return") {
+        return { ...base, recall: false, ownerCode: returnTo, ownerName: (families as any)[returnTo]?.name || returnTo, status: "returned", givenTo: null, givenToName: null };
+      }
       if (direction === "receive") {
         if (receivedFrom) {
           return { ...base, ownerCode: receivedFrom, ownerName: (families as any)[receivedFrom]?.name || receivedFrom, status: "out", givenTo: family.code, givenToName: family.name };
@@ -351,7 +355,7 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
 
   if (step === "direction") return (
     <div style={{ paddingBottom: 20 }}>
-      <TopBar title="Scan a Bundle" subtitle="First — are you giving or receiving?" onBack={onBack} />
+      <TopBar title="Scan a Bundle" subtitle="First, are you giving, receiving, or returning?" onBack={onBack} />
       <div style={{ padding: "20px 18px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div onClick={() => { setDirection("give"); setStep("upload"); }} style={{ background: `linear-gradient(135deg, ${T.sage}, #3D6B3D)`, borderRadius: 16, padding: "20px", cursor: "pointer", color: T.white }}>
@@ -372,6 +376,15 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
               </div>
             </div>
           </div>
+          <div onClick={() => { setDirection("return"); setStep("upload"); }} style={{ background: T.white, border: `2px solid ${T.terracotta}`, borderRadius: 16, padding: "20px", cursor: "pointer" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ fontSize: 32, color: T.terracotta }}>↩</span>
+              <div>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 17, color: T.ink, fontFamily: "'DM Sans', sans-serif" }}>I'm returning these</p>
+                <p style={{ margin: "2px 0 0", fontSize: 13, color: T.muted }}>Something I borrowed, going back to its owner</p>
+              </div>
+            </div>
+          </div>
         </div>
         <p style={{ textAlign: "center", fontSize: 12, color: T.muted, marginTop: 20, lineHeight: 1.5 }}>Either way, you'll snap one photo and the AI lists every item.</p>
       </div>
@@ -380,7 +393,7 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
 
   if (step === "upload") return (
     <div style={{ paddingBottom: 20 }}>
-      <TopBar title={direction === "receive" ? "Scan Received Bundle" : "Scan a Bundle"} subtitle="AI identifies each item from one photo" onBack={() => setStep("direction")} />
+      <TopBar title={direction === "receive" ? "Scan Received Bundle" : direction === "return" ? "Scan Returned Bundle" : "Scan a Bundle"} subtitle="AI identifies each item from one photo" onBack={() => setStep("direction")} />
       <div style={{ padding: "18px" }}>
         <div style={{ background: T.sageLight, borderRadius: 14, padding: "14px 16px", marginBottom: 20, display: "flex", gap: 12 }}>
           <span style={{ fontSize: 22, flexShrink: 0 }}>📸</span>
@@ -459,12 +472,22 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
 
   if (step === "details") return (
     <div style={{ paddingBottom: 20 }}>
-      <TopBar title={direction === "receive" ? "Received Details" : "Handoff Details"} subtitle={`Applies to all ${selected.length} items`} onBack={() => setStep("review")} />
+      <TopBar title={direction === "receive" ? "Received Details" : direction === "return" ? "Return Details" : "Handoff Details"} subtitle={`Applies to all ${selected.length} items`} onBack={() => setStep("review")} />
       <div style={{ padding: "16px 18px" }}>
         <div style={{ background: T.sageLight, borderRadius: 12, padding: "12px 14px", marginBottom: 20 }}>
           <p style={{ margin: 0, fontSize: 13, color: T.sage, fontFamily: "'DM Sans', sans-serif", lineHeight: 1.5 }}>These settings apply to all <strong>{selected.length} items</strong> in this bundle.</p>
         </div>
-        {direction === "receive" ? (
+        {direction === "return" ? (
+          <>
+            <FieldSelect label="Who are you returning these to?" value={returnTo} onChange={setReturnTo}
+              options={[{ value: "", label: "Choose family…" }, ...(otherFamilies as any[]).map(f => ({ value: f.code, label: f.name }))]} />
+            <div style={{ background: T.white, borderRadius: 12, border: `1.5px solid ${T.border}`, padding: "12px 14px", marginBottom: 20 }}>
+              <p style={{ margin: 0, fontSize: 12, color: T.muted, fontFamily: "'DM Sans', sans-serif", lineHeight: 1.5 }}>
+                {returnTo ? `These will be logged as returned to ${(families as any)[returnTo]?.name || returnTo}.` : "Pick the family these belong to."}
+              </p>
+            </div>
+          </>
+        ) : direction === "receive" ? (
           <>
             <FieldSelect label="Who gave these to you? (optional)" value={receivedFrom} onChange={setReceivedFrom}
               options={[{ value: "", label: "Skip — just log as mine" }, ...(otherFamilies as any[]).map(f => ({ value: f.code, label: f.name }))]} />
@@ -503,7 +526,7 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
         </div>
         {scanError && <div style={{ background: T.terraSoft, borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}><p style={{ margin: 0, fontSize: 13, color: T.terracotta }}>⚠️ {scanError}</p></div>}
         {uploadStatus && <p style={{ textAlign: "center", fontSize: 13, color: T.sage, marginBottom: 12 }}>📸 {uploadStatus}</p>}
-        <Btn onClick={handleLogAll} disabled={saving} style={{ width: "100%" }}>{saving ? (uploadStatus || "Saving…") : `🌿 Log all ${selected.length} items →`}</Btn>
+        <Btn onClick={handleLogAll} disabled={saving || (direction === "return" && !returnTo)} style={{ width: "100%" }}>{saving ? (uploadStatus || "Saving…") : `🌿 Log all ${selected.length} items →`}</Btn>
       </div>
     </div>
   );
@@ -515,14 +538,14 @@ function PhotoScanScreen({ family, families, onBack, onSaved, onInsertItems }: a
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 26, color: T.ink, margin: "0 0 8px" }}>Bundle logged!</h2>
       <p style={{ color: T.muted, fontSize: 15, marginBottom: 12, lineHeight: 1.6 }}>
         <strong style={{ color: T.ink }}>{selected.length} items</strong>
-        {direction === "receive" ? (receivedFrom ? ` logged, on loan from ${(families as any)[receivedFrom]?.name || receivedFrom}.` : " logged as yours.") : (givenTo ? ` logged and given to ${(families as any)[givenTo]?.name || givenTo}.` : " logged and available to share.")}
+        {direction === "return" ? ` logged and returned to ${(families as any)[returnTo]?.name || returnTo}.` : direction === "receive" ? (receivedFrom ? ` logged, on loan from ${(families as any)[receivedFrom]?.name || receivedFrom}.` : " logged as yours.") : (givenTo ? ` logged and given to ${(families as any)[givenTo]?.name || givenTo}.` : " logged and available to share.")}
       </p>
       <div style={{ background: T.sageLight, borderRadius: 12, padding: "12px 16px", marginBottom: 28, textAlign: "left" as const, width: "100%" }}>
         {selected.slice(0, 6).map(item => <p key={item.id} style={{ margin: "3px 0", fontSize: 13, color: T.sage, fontFamily: "'DM Sans', sans-serif" }}>✓ {item._name} · {item._size}</p>)}
         {selected.length > 6 && <p style={{ margin: "4px 0 0", fontSize: 12, color: T.muted }}>+{selected.length - 6} more</p>}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-        <Btn onClick={() => { setStep("direction"); setDirection(null); setImagePreview(null); setImageBase64(null); setImageFile(null); setItems([]); setGivenTo(""); setReceivedFrom(""); }}>Scan another bundle</Btn>
+        <Btn onClick={() => { setStep("direction"); setDirection(null); setImagePreview(null); setImageBase64(null); setImageFile(null); setItems([]); setGivenTo(""); setReceivedFrom(""); setReturnTo(""); }}>Scan another bundle</Btn>
         <Btn variant="ghost" onClick={() => onSaved(direction)}>Back to wardrobe</Btn>
       </div>
     </div>
@@ -596,7 +619,7 @@ function HomeScreen({ family, families, items, onNavigate, syncing }: any) {
         <span style={{ fontSize: 34 }}>📸</span>
         <div>
           <p style={{ margin: 0, fontWeight: 700, fontSize: 16, color: T.white, fontFamily: "'DM Sans', sans-serif" }}>Scan a bundle</p>
-          <p style={{ margin: "2px 0 0", fontSize: 13, color: "rgba(255,255,255,0.75)" }}>Giving or receiving — photo-log in one shot</p>
+          <p style={{ margin: "2px 0 0", fontSize: 13, color: "rgba(255,255,255,0.75)" }}>Giving, receiving, or returning: photo-log in one shot</p>
         </div>
         <span style={{ marginLeft: "auto", color: "rgba(255,255,255,0.7)", fontSize: 20 }}>→</span>
       </div>
@@ -1107,7 +1130,7 @@ export default function App() {
   };
 
   const renderMain = () => {
-    if (subScreen === "scan") return <PhotoScanScreen family={family} families={families} onBack={() => setSubScreen(null)} onSaved={(dir) => { setSubScreen(null); setTab(dir === "receive" ? "received" : "given"); showToast("Bundle logged! 🌿"); }} onInsertItems={newItems => setItems(p => [...p, ...newItems])} />;
+    if (subScreen === "scan") return <PhotoScanScreen family={family} families={families} onBack={() => setSubScreen(null)} onSaved={(dir) => { setSubScreen(null); setTab(dir === "receive" ? "received" : dir === "return" ? "all" : "given"); showToast(dir === "return" ? "Return logged! 🌿" : "Bundle logged! 🌿"); }} onInsertItems={newItems => setItems(p => [...p, ...newItems])} />;
     if (subScreen === "log_give") return <LogItemScreen family={family} families={families} items={items} setItems={setItems} mode="give" onBack={() => setSubScreen(null)} />;
     if (subScreen === "log_receive") return <LogItemScreen family={family} families={families} items={items} setItems={setItems} mode="receive" onBack={() => setSubScreen(null)} />;
     switch (tab) {
